@@ -29,6 +29,12 @@ class RecurrentGCN(torch.nn.Module):
         h: node hidden state matrix from previous time
         c: cell state matrix from previous time
         """
+
+        #x - (num_nodes, node_feat_dim)- nodes features?
+        # edge_index - (2, num_edges) - he first row contains source nodes, and the second row contains target nodes
+        # edge_weight - represents the weight of each edge in the graph - (num_edges,)
+        #h - (num_nodes, hidden_dim)
+        #c - (num_nodes, hidden_dim)
         h_0, c_0 = self.recurrent(x, edge_index, edge_weight, h, c)
         h = F.relu(h_0)
         h = self.linear(h)
@@ -49,17 +55,17 @@ class LinkPredictor(torch.nn.Module):
         self.dropout = dropout
 
     def reset_parameters(self):
-        for lin in self.lins:
+        for lin in self.lins: # ensures that model weights are reinitialized when necessary.
             lin.reset_parameters()
 
-    def forward(self, x_i, x_j):
-        x = x_i * x_j
+    def forward(self, x_i, x_j): #pairs of nodes 
+        x = x_i * x_j #commonly used in link prediction to capture interaction features.
         for lin in self.lins[:-1]:
             x = lin(x)
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
         x = self.lins[-1](x)
-        return torch.sigmoid(x)
+        return torch.sigmoid(x) #probability between 0 and 1, indicating the likelihood that an edge exists.
 
 
 
