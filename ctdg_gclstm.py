@@ -167,22 +167,23 @@ if __name__ == '__main__':
     #ctdg dataset
     dataset = PyGLinkPropPredDataset(name=args.dataset, root="datasets")
     full_data = dataset.get_TemporalData()
-    full_data = full_data.to(args.device)
+    full_data = full_data.to(args.device) #TemporalData(src=[4873540], dst=[4873540], t=[4873540], msg=[4873540, 1], y=[4873540])
     #get masks
-    train_mask = dataset.train_mask
+    train_mask = dataset.train_mask #True, False....
     val_mask = dataset.val_mask
     test_mask = dataset.test_mask
-    train_edges = full_data[train_mask]
+    train_edges = full_data[train_mask]  #TemporalData(src=[3413837], dst=[3413837], t=[3413837], msg=[3413837, 1], y=[3413837])
     val_edges = full_data[val_mask]
     test_edges = full_data[test_mask]
 
     #* set up TGB queries, this is only for val and test
-    metric = dataset.eval_metric
-    neg_sampler = dataset.negative_sampler
+    metric = dataset.eval_metric #mrr
+    neg_sampler = dataset.negative_sampler #sampler object
     evaluator = Evaluator(name=args.dataset)
     min_dst_idx, max_dst_idx = int(full_data.dst.min()), int(full_data.dst.max())
 
-
+#     min_dst_idx 0
+# max_dst_idx 352621
     if args.wandb:
         wandb.init(
             # set the wandb project where this run will be logged
@@ -197,7 +198,7 @@ if __name__ == '__main__':
             }
         )
     #! set up node features
-    node_feat = dataset.node_feat
+    node_feat = dataset.node_feat #NONE
     if (node_feat is not None):
         node_feat = node_feat.to(args.device)
         node_feat_dim = node_feat.size(1)
@@ -209,7 +210,9 @@ if __name__ == '__main__':
     hidden_dim = 256
 
     #* load the discretized version
-    data = loader(dataset=args.dataset, time_scale=args.time_scale)
+    data = loader(dataset=args.dataset, time_scale=args.time_scale) #loaded adges - 4873540
+    #Number of unique edges:4730223
+
     train_data = data['train_data']
     val_data = data['val_data']
     test_data = data['test_data']
