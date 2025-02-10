@@ -31,7 +31,7 @@ class RecurrentGCN(torch.nn.Module):
         """
 
         #x - (num_nodes, node_feat_dim)- nodes features?
-        # edge_index - (2, num_edges) - he first row contains source nodes, and the second row contains target nodes
+        # edge_index - (2, num_edges) - the first row contains source nodes, and the second row contains target nodes
         # edge_weight - represents the weight of each edge in the graph - (num_edges,)
         #h - (num_nodes, hidden_dim)
         #c - (num_nodes, hidden_dim)
@@ -97,7 +97,13 @@ def test_tgb(h,
         batch.t,
         batch.msg,
         )
+        #"query_batch" - For each positive edge in the `pos_batch`, return a list of negative edges
+       # `split_mode` specifies whether the valiation or test evaluation set should be retrieved.
+       # modify now to include edge type argument
         neg_batch_list = neg_sampler.query_batch(np.array(pos_src.cpu()), np.array(pos_dst.cpu()), np.array(pos_t.cpu()), split_mode=split_mode)
+        
+        #^^a list of list; each internal list contains the set of negative edges that
+                       # should be evaluated against each positive edge.
         for idx, neg_batch in enumerate(neg_batch_list):
             query_src = torch.full((1 + len(neg_batch),), pos_src[idx], device=args.device)
             query_dst = torch.tensor(
@@ -164,12 +170,12 @@ if __name__ == '__main__':
 
     batch_size = args.batch_size
 
-    #ctdg dataset
-    dataset = PyGLinkPropPredDataset(name=args.dataset, root="datasets")
-    full_data = dataset.get_TemporalData()
-    full_data = full_data.to(args.device) #TemporalData(src=[4873540], dst=[4873540], t=[4873540], msg=[4873540, 1], y=[4873540])
+    #ctdg dataset ->> look at  tgb.linkproppred.dataset_pyg or dataset
+    dataset = PyGLinkPropPredDataset(name=args.dataset, root="datasets") #time step,source node,target node,weight of nodes as seen in the csv
+    full_data = dataset.get_TemporalData() #defined as src, dst, t, msg between nodes, y - edge label , edge type (optional) , weights .  y is the label indicating if an edge is a true edge, always 1 for true edges
+    full_data = full_data.to(args.device) #TemporalData(src=[4873540], dst=[4873540], t=[4873540], msg=[4873540, 1], y=[4873540]) --> no w, no type!! to get data aboput those attributes just  .src[index]
     #get masks
-    train_mask = dataset.train_mask #True, False....
+    train_mask = dataset.train_mask #True, False.... -> serves to identify which samples in your dataset should be used for training the model
     val_mask = dataset.val_mask
     test_mask = dataset.test_mask
     train_edges = full_data[train_mask]  #TemporalData(src=[3413837], dst=[3413837], t=[3413837], msg=[3413837, 1], y=[3413837])
@@ -177,10 +183,14 @@ if __name__ == '__main__':
     test_edges = full_data[test_mask]
 
     #* set up TGB queries, this is only for val and test
-    metric = dataset.eval_metric #mrr
-    neg_sampler = dataset.negative_sampler #sampler object
-    evaluator = Evaluator(name=args.dataset)
-    min_dst_idx, max_dst_idx = int(full_data.dst.min()), int(full_data.dst.max())
+    metric = dataset.eval_metric #mrr ->the evaluation metric for this data
+    neg_sampler = dataset.negative_sampler #sampler object -->For each positive edge in the `pos_batch`, return a list of negative edges `split_mode` specifies whether the valiation or test evaluation set should be retrieved. 
+    evaluator = Evaluator(name=args.dataset) #evaluation class
+    min_dst_idx, max_dst_idx = int(full_data.dst.min()), int(full_data.dst.max()) #dst - A list of destination nodes for the events with shape [num_events]
+
+    print("print data properties in the 0 link", full_data.src [0],full_data.dst[0],full_data.t[0],
+                full_data.msg[0],
+                full_data.y[0])
 
 #     min_dst_idx 0
 # max_dst_idx 352621
@@ -198,7 +208,7 @@ if __name__ == '__main__':
             }
         )
     #! set up node features
-    node_feat = dataset.node_feat #NONE
+    node_feat = dataset.node_feat #NONE ---> node features of the dataset with dim [N, feat_dim] , uniq_nodes!!
     if (node_feat is not None):
         node_feat = node_feat.to(args.device)
         node_feat_dim = node_feat.size(1)
@@ -213,7 +223,16 @@ if __name__ == '__main__':
     data = loader(dataset=args.dataset, time_scale=args.time_scale) #loaded adges - 4873540
     #Number of unique edges:4730223
 
-    train_data = data['train_data']
+    train_data = data['train_data'] #each is a dictionary containing:
+    # 'edge_index': pos_undirected_edges,
+    # total number of nodes across all split; this is the same value for each split -> dict, keys are integer timestamps, values are connection between two nodes src and trg
+    # data['edge_index_list'][snapshot_idx]     
+    #'num_nodes': num_nodes, -> int number of nodes in the graph
+         #'time_length': len(pos_undirected_edges), -> length of edges int
+        #'ts_map': ts_map, -> dist, int[0-time_length]: unix, element are the corresponding unix timestamp of the snapshots
+        #'original_edges': edge_index_list, #just original list -< not having that!!
+
+    #num nodes 352637, time_length 207, ts maps 207 to unix, "edge index" maps 207 to edge indexes --> how can we know the nodes which are participating in the edge?
     val_data = data['val_data']
     test_data = data['test_data']
     num_nodes = data['train_data']['num_nodes'] + 1
@@ -247,21 +266,25 @@ if __name__ == '__main__':
             total_loss = 0
             model.train()
             link_pred.train()
-            snapshot_list = train_data['edge_index']
+            snapshot_list = train_data['edge_index'] #0: edges, 1: edges.....207:edges
             h_0, c_0, h = None, None, None
             total_loss = 0
-            for snapshot_idx in range(train_data['time_length']):
+            for snapshot_idx in range(train_data['time_length']): #207
 
                 optimizer.zero_grad()
                 if (snapshot_idx == 0): #first snapshot, feed the current snapshot
-                    cur_index = snapshot_list[snapshot_idx]
+                    cur_index = snapshot_list[snapshot_idx] #edge indexes
                     cur_index = cur_index.long().to(args.device)
                     # TODO, also need to support edge attributes correctly in TGX
                     if ('edge_attr' not in train_data):
                         edge_attr = torch.ones(cur_index.size(1), edge_feat_dim).to(args.device)
                     else:
                         raise NotImplementedError("Edge attributes are not yet supported")
-                    h, h_0, c_0 = model(node_feat, cur_index, edge_attr, h_0, c_0)
+                    h, h_0, c_0 = model(node_feat, cur_index, edge_attr, h_0, c_0) #random node features and 1s for edge_sttr
+                    if snapshot_idx < 5:
+                        print("edge_attr", edge_attr, edge_attr.shape) # 1, 1..
+                        print("node_feat", node_feat, node_feat.shape ) #random
+                        print("prev_index", prev_index, prev_index.shape) #[][] - (2, edges)
                 else: #subsequent snapshot, feed the previous snapshot
                     prev_index = snapshot_list[snapshot_idx-1]
                     prev_index = prev_index.long().to(args.device)
@@ -270,6 +293,10 @@ if __name__ == '__main__':
                     else:
                         raise NotImplementedError("Edge attributes are not yet supported")
                     h, h_0, c_0 = model(node_feat, prev_index, edge_attr, h_0, c_0)
+                    if snapshot_idx < 5:
+                        print("h", h, h.shape) #torch.Size([352638, 256]) - nodes and features
+                        print("h_0", h_0, h_0.shape )
+                        print("c_0", c_0, c_0.shape)
 
                 pos_index = snapshot_list[snapshot_idx]
                 pos_index = pos_index.long().to(args.device)
@@ -277,13 +304,14 @@ if __name__ == '__main__':
                 neg_dst = torch.randint(
                         0,
                         num_nodes,
-                        (pos_index.shape[1],),
+                        (pos_index.shape[1],), #num of edges
                         dtype=torch.long,
                         device=args.device,
-                    )
+                    )#neg_dst tensor([190263, 191614, 200024, 197477, 136266, 349326,  80000, 289975],
+       # device='cuda:0') torch.Size([8]) ->> nodes indexes?
 
-                pos_out = link_pred(h[pos_index[0]], h[pos_index[1]])
-                neg_out = link_pred(h[pos_index[0]], h[neg_dst])
+                pos_out = link_pred(h[pos_index[0]], h[pos_index[1]]) #source nodes to target nodes data from h - probability of future pos_index torch.Size([8, 1])
+                neg_out = link_pred(h[pos_index[0]], h[neg_dst])# from target to some random...torch.Size([8, 1])
 
                 loss = criterion(pos_out, torch.ones_like(pos_out))
                 loss += criterion(neg_out, torch.zeros_like(neg_out))
