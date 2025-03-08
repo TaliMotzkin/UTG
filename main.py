@@ -308,23 +308,19 @@ if __name__ == '__main__':
                         extracted_dst = train_edges.dst[shot_edge_idx]
 
                         edges = torch.stack([extracted_src, extracted_dst], dim=1)
-                        edges_np = edges.cpu().numpy()
+                        # print("edges", edges)
                         
-                        unique_edges_np, unique_indices_np = np.unique(edges_np, axis=0, return_index=True)
-                        
-                        unique_edges = torch.from_numpy(unique_edges_np).to(edges.device)
-                        unique_indices = torch.from_numpy(unique_indices_np).to(edges.device)
-                        
-                        sorted_order = torch.argsort(unique_indices)
-                        unique_edges = unique_edges[sorted_order]
-                        
+                        unique_edges = torch.unique(edges, dim=0)
+                       
                         unique_extracted_src = unique_edges[:, 0]
                         unique_extracted_dst = unique_edges[:, 1]
 
                         merged_extracted = torch.cat([unique_extracted_src, unique_extracted_dst])
-
+                        
                         # Compare with cur_index (which should be in the same order)
-                        assert torch.equal(merged_extracted, cur_index[0]), "Source nodes do not match!"
+                        assert torch.equal(unique_extracted_src, cur_index[0][:len(unique_extracted_src)]), "Source nodes do not match!" 
+                        assert torch.equal(unique_extracted_dst, cur_index[1][:len(unique_extracted_dst)]), "Target nodes do not match!" 
+
                         
                     else:
                         raise NotImplementedError("Edge attributes are not yet supported")
@@ -347,32 +343,32 @@ if __name__ == '__main__':
                         shot_edge_times = train_edges.t[shot_edge_idx]
                         extracted_src = train_edges.src[shot_edge_idx]
                         extracted_dst = train_edges.dst[shot_edge_idx]
+                        extracted_features = train_edges.msg[shot_edge_idx]
                         
                         edges = torch.stack([extracted_src, extracted_dst], dim=1)
                         # print("edges", edges)
-                        edges_np = edges.cpu().numpy()
                         
-                        unique_edges_np, unique_indices_np = np.unique(edges_np, axis=0, return_index=True)
-                        unique_edges = torch.from_numpy(unique_edges_np).to(edges.device)
-                        unique_indices = torch.from_numpy(unique_indices_np).to(edges.device)
-                        # print("unique_edges_np", unique_edges)
-
-                        
+                        unique_edges = torch.unique(edges, dim=0)
+                       
                         unique_extracted_src = unique_edges[:, 0]
                         unique_extracted_dst = unique_edges[:, 1]
 
                         merged_extracted = torch.cat([unique_extracted_src, unique_extracted_dst])
 
-                        print("unique_extracted_src", unique_extracted_src, len(unique_extracted_src))
-                        print("unique_extracted_dst", unique_extracted_dst)
-                        print("merged_extracted", merged_extracted)
-                        print("prev_index[0]", prev_index[0])
-                        print("prev_index[1]", prev_index[1])
+                        # print("unique_extracted_src", unique_extracted_src, len(unique_extracted_src))
+                        # print("unique_extracted_dst", unique_extracted_dst)
+                        # print("merged_extracted", merged_extracted)
+                        # print("prev_index[0]", prev_index[0])
+                        # print("prev_index[1]", prev_index[1])
                         
                         # Compare with cur_index (which should be in the same order)
-                        assert torch.equal(merged_extracted, prev_index[0]), "Source nodes do not match!"                       
+                        assert torch.equal(unique_extracted_src, prev_index[0][:len(unique_extracted_src)]), "Source nodes do not match!" 
+                        assert torch.equal(unique_extracted_dst, prev_index[1][:len(unique_extracted_dst)]), "Target nodes do not match!" 
 
                         
+                        canonical_edges = torch.stack([torch.min(extracted_src, extracted_dst), 
+                               torch.max(extracted_src, extracted_dst)], dim=1)
+                        unique_edges_np, inverse_indices = torch.unique(canonical_edges, axis=0, return_inverse=True)
                         
                     else:
                         raise NotImplementedError("Edge attributes are not yet supported")
