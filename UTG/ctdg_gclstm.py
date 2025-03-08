@@ -270,8 +270,9 @@ if __name__ == '__main__':
             model.train()
             link_pred.train()
             snapshot_list = train_data['edge_index'] #0: snap, 1: snap.....207:snap
+            print("snapshot_list length", len(snapshot_list))
             print("time", train_data['ts_map'])
-            break
+            
             h_0, c_0, h = None, None, None
             total_loss = 0
             for snapshot_idx in range(train_data['time_length']): #207
@@ -280,6 +281,7 @@ if __name__ == '__main__':
                 if (snapshot_idx == 0): #first snapshot, feed the current snapshot
                     cur_index = snapshot_list[snapshot_idx] #edge indexes
                     cur_index = cur_index.long().to(args.device)
+                    print("noeds indexes", cur_index)
                     # TODO, also need to support edge attributes correctly in TGX
                     if ('edge_attr' not in train_data):
                         edge_attr = torch.ones(cur_index.size(1), edge_feat_dim).to(args.device)
@@ -302,6 +304,8 @@ if __name__ == '__main__':
                         print("h_0", h_0, h_0.shape )
                         print("c_0", c_0, c_0.shape)
                         print("prev_index", prev_index, prev_index.shape) #[][] - (2, edges)
+                    else:
+                        break
 
 
                 pos_index = snapshot_list[snapshot_idx]

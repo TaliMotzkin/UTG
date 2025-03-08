@@ -9,7 +9,7 @@ def set_up_logger(args, sys_argv):
   # set up running log
   n_degree, n_hop = process_sampling_numbers(args.n_degree, args.n_hop)
   n_degree = [str(n) for n in n_degree]
-  runtime_id = '{}-{}-{}-{}-{}-{}'.format(str(time.time()), args.dataset, n_hop, 'k'.join(n_degree), args.pos_dim)
+  runtime_id = '{}-{}-{}-{}-{}'.format(str(time.time()), args.dataset, n_hop, 'k'.join(n_degree), args.pos_dim)
   logging.basicConfig(level=logging.INFO)
   logger = logging.getLogger()
   logger.setLevel(logging.DEBUG)

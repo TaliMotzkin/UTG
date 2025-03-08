@@ -11,6 +11,7 @@ import os
 import sys
 import wandb
 import timeit
+from Nat_init import *
 
 project_root = os.path.abspath('.')
 sys.path.insert(0, project_root)
@@ -169,10 +170,11 @@ def test_tgb(h,
 if __name__ == '__main__':
 
     import TGX
-    from configs import args
+    from configs import get_args
     from UTG.utils.utils_func import set_random
     from UTG.utils.data_util import loader
 
+    args, argsv = get_args()
     set_random(args.seed)
 
     batch_size = args.batch_size
@@ -199,7 +201,21 @@ if __name__ == '__main__':
                 full_data.msg[0],
                 full_data.y[0])
 
-    NAT_module = init_nat_module(train_edges,val_edges, test_edges, args)
+    #! set up node features
+    node_feat = dataset.node_feat #NONE ---> node features of the dataset with dim [N, feat_dim] , uniq_nodes!!
+    if (node_feat is not None):
+        print("Node not none")
+        node_feat = node_feat.to(args.device)
+        node_feat_dim = node_feat.size(1)
+    else:
+        print("Node is none")
+        node_feat_dim = 172 # was 256 in UTG, in NAT is 172
+        node_feat = torch.randn((full_data.num_nodes,node_feat_dim)).to(args.device)
+
+    e_feat = full_data.msg
+    edge_feat_dim = e_feat.shape[1]
+    
+    NAT_module = init_nat_module(full_data, e_feat, node_feat, train_edges,val_edges, test_edges, args, argsv)
     
     
 #     min_dst_idx 0
@@ -217,18 +233,7 @@ if __name__ == '__main__':
             "time granularity": args.time_scale,
             }
         )
-    #! set up node features
-    node_feat = dataset.node_feat #NONE ---> node features of the dataset with dim [N, feat_dim] , uniq_nodes!!
-    if (node_feat is not None):
-        print("Node not none")
-        node_feat = node_feat.to(args.device)
-        node_feat_dim = node_feat.size(1)
-    else:
-        print("Node is none")
-        node_feat_dim = 256
-        node_feat = torch.randn((full_data.num_nodes,node_feat_dim)).to(args.device)
-
-    edge_feat_dim = 1
+    
     hidden_dim = 256
     
     #* load the discretized version
@@ -279,8 +284,8 @@ if __name__ == '__main__':
             model.train()
             link_pred.train()
             snapshot_list = train_data['edge_index'] #0: snap, 1: snap.....207:snap
-            print("time", train_data['ts_map'])
-            break
+            # print("time", train_data['ts_map']) #{0: 0, 1: 3600, 2: 7200, 3: 10800...207:1861200}
+            
             h_0, c_0, h = None, None, None
             total_loss = 0
             for snapshot_idx in range(train_data['time_length']): #207
@@ -292,6 +297,35 @@ if __name__ == '__main__':
                     # TODO, also need to support edge attributes correctly in TGX
                     if ('edge_attr' not in train_data):
                         edge_attr = torch.ones(cur_index.size(1), edge_feat_dim).to(args.device)
+            
+
+                        shot_edge_mask = train_edges.t <= train_data['ts_map'][snapshot_idx]
+                        
+                        shot_edge_idx = torch.nonzero(shot_edge_mask, as_tuple=True)[0]
+                        
+                        shot_edge_times = train_edges.t[shot_edge_idx]
+                        extracted_src = train_edges.src[shot_edge_idx]
+                        extracted_dst = train_edges.dst[shot_edge_idx]
+
+                        edges = torch.stack([extracted_src, extracted_dst], dim=1)
+                        edges_np = edges.cpu().numpy()
+                        
+                        unique_edges_np, unique_indices_np = np.unique(edges_np, axis=0, return_index=True)
+                        
+                        unique_edges = torch.from_numpy(unique_edges_np).to(edges.device)
+                        unique_indices = torch.from_numpy(unique_indices_np).to(edges.device)
+                        
+                        sorted_order = torch.argsort(unique_indices)
+                        unique_edges = unique_edges[sorted_order]
+                        
+                        unique_extracted_src = unique_edges[:, 0]
+                        unique_extracted_dst = unique_edges[:, 1]
+
+                        merged_extracted = torch.cat([unique_extracted_src, unique_extracted_dst])
+
+                        # Compare with cur_index (which should be in the same order)
+                        assert torch.equal(merged_extracted, cur_index[0]), "Source nodes do not match!"
+                        
                     else:
                         raise NotImplementedError("Edge attributes are not yet supported")
                     h, h_0, c_0 = model(node_feat, cur_index, edge_attr, h_0, c_0) #random node features and 1s for edge_sttr
@@ -303,6 +337,43 @@ if __name__ == '__main__':
                     prev_index = prev_index.long().to(args.device)
                     if ('edge_attr' not in train_data):
                         edge_attr = torch.ones(prev_index.size(1), edge_feat_dim).to(args.device)
+
+                        if snapshot_idx-1 ==0:
+                            shot_edge_mask = train_edges.t <= train_data['ts_map'][snapshot_idx-1]
+                        else:
+                            shot_edge_mask = (train_edges.t > train_data['ts_map'][snapshot_idx - 2]) & (train_edges.t <= train_data['ts_map'][snapshot_idx-1])
+                        shot_edge_idx = torch.nonzero(shot_edge_mask, as_tuple=True)[0]
+                        
+                        shot_edge_times = train_edges.t[shot_edge_idx]
+                        extracted_src = train_edges.src[shot_edge_idx]
+                        extracted_dst = train_edges.dst[shot_edge_idx]
+                        
+                        edges = torch.stack([extracted_src, extracted_dst], dim=1)
+                        # print("edges", edges)
+                        edges_np = edges.cpu().numpy()
+                        
+                        unique_edges_np, unique_indices_np = np.unique(edges_np, axis=0, return_index=True)
+                        unique_edges = torch.from_numpy(unique_edges_np).to(edges.device)
+                        unique_indices = torch.from_numpy(unique_indices_np).to(edges.device)
+                        # print("unique_edges_np", unique_edges)
+
+                        
+                        unique_extracted_src = unique_edges[:, 0]
+                        unique_extracted_dst = unique_edges[:, 1]
+
+                        merged_extracted = torch.cat([unique_extracted_src, unique_extracted_dst])
+
+                        print("unique_extracted_src", unique_extracted_src, len(unique_extracted_src))
+                        print("unique_extracted_dst", unique_extracted_dst)
+                        print("merged_extracted", merged_extracted)
+                        print("prev_index[0]", prev_index[0])
+                        print("prev_index[1]", prev_index[1])
+                        
+                        # Compare with cur_index (which should be in the same order)
+                        assert torch.equal(merged_extracted, prev_index[0]), "Source nodes do not match!"                       
+
+                        
+                        
                     else:
                         raise NotImplementedError("Edge attributes are not yet supported")
                     h, h_0, c_0 = model(node_feat, prev_index, edge_attr, h_0, c_0)
@@ -311,7 +382,8 @@ if __name__ == '__main__':
                         print("h_0", h_0, h_0.shape )
                         print("c_0", c_0, c_0.shape)
                         print("prev_index", prev_index, prev_index.shape) #[][] - (2, edges)
-
+                    else:
+                        break
 
                 pos_index = snapshot_list[snapshot_idx]
                 pos_index = pos_index.long().to(args.device)
