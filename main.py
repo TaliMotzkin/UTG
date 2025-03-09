@@ -46,7 +46,35 @@ class RecurrentGCN(torch.nn.Module):
         h = self.linear(h)
         return h, h_0, c_0
 
+class LinkPredictorWithHop(torch.nn.Module):
+    def __init__(self, in_channels, hop_dim, hidden_channels, out_channels, num_layers, dropout):
+        super(LinkPredictorWithHop, self).__init__()
+        self.input_dim = in_channels + hop_dim
+        
+        self.lins = torch.nn.ModuleList()
+        self.lins.append(torch.nn.Linear(self.input_dim, hidden_channels))
+        for _ in range(num_layers - 2):
+            self.lins.append(torch.nn.Linear(hidden_channels, hidden_channels))
+        self.lins.append(torch.nn.Linear(hidden_channels, out_channels))
+        self.dropout = dropout
 
+    def reset_parameters(self):
+        for lin in self.lins:
+            lin.reset_parameters()
+
+    def forward(self, x_i, x_j, source_hop, target_hop):
+        combined_x_i = torch.cat([x_i, source_hop], dim=1)
+        combined_x_j = torch.cat([x_j, target_hop], dim=1)
+        
+        x = combined_x_i * combined_x_j
+        
+        for lin in self.lins[:-1]:
+            x = lin(x)
+            x = F.relu(x)
+            x = F.dropout(x, p=self.dropout, training=self.training)
+        x = self.lins[-1](x)
+        return torch.sigmoid(x)
+        
 class LinkPredictor(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels, num_layers,
                  dropout):
@@ -268,7 +296,7 @@ if __name__ == '__main__':
     edge_feat_dim = e_feat.shape[1]
     
     NAT_module = init_nat_module(full_data, e_feat, node_feat, train_edges,val_edges, test_edges, args, argsv)
-    random_sampler_train = RandEdgeSampler((train_edges.src, ), (train_edges.dst, ))
+    random_sampler_train = RandEdgeSampler((train_edges.src.cpu().numpy(), ), (train_edges.dst.cpu().numpy(), ))
 
     
 #     min_dst_idx 0
@@ -317,8 +345,17 @@ if __name__ == '__main__':
         #* initialization of the model to prep for training
         model = RecurrentGCN(node_feat_dim=node_feat_dim, hidden_dim=hidden_dim, K=1).to(args.device)
         node_feat = torch.randn((num_nodes, node_feat_dim)).to(args.device)
-        link_pred = LinkPredictor(hidden_dim, hidden_dim, 1,
+
+        if args.with_hop == 0:
+            link_pred = LinkPredictor(hidden_dim, hidden_dim, 1,
                                 2, 0.2).to(args.device)
+        if args.with_hop == 1:
+            link_pred = LinkPredictorWithHop(in_channels=hidden_dim, 
+                                 hop_dim=7, 
+                                 hidden_channels=hidden_dim, 
+                                 out_channels=1, 
+                                 num_layers=2, 
+                                 dropout=0.2).to(args.device)
 
 
         optimizer = torch.optim.Adam(
@@ -331,6 +368,11 @@ if __name__ == '__main__':
 
         for epoch in range(num_epochs):
             print ("------------------------------------------")
+            NAT_module.nat.set_seed(seed)
+
+            NAT_module.nat.reset_store()
+            NAT_module.nat.reset_self_rep()
+            
             train_start_time = timeit.default_timer()
             optimizer.zero_grad()
             total_loss = 0
@@ -452,15 +494,23 @@ if __name__ == '__main__':
                 size = len(src_l_cut)
                 _, bad_l_cut = random_sampler_train.sample(size)
 
-                print("size", size, "src_l_cut", src_l_cut)
+                # print("size", size, "src_l_cut", src_l_cut)
         
                 _, _ = NAT_module.contrast_nat(src_l_cut, tgt_l_cut, bad_l_cut, ts_l_cut, e_l_cut)
-                hop_0 = nat.get_neighborhood_store()[0][0]
-                print("hop_0", hop_0)
-
-                pos_out = link_pred(h[pos_index[0]], h[pos_index[1]]) #source nodes to target nodes data from h - probability of future pos_index torch.Size([8, 1])
-                neg_out = link_pred(h[pos_index[0]], h[neg_dst])# from target to some random...torch.Size([8, 1])
-
+                hop_0 = NAT_module.nat.get_neighborhood_store()[0]
+                # print("hop_0", hop_0.shape)
+                source_hop = hop_0[pos_index[0]]
+                target_hop = hop_0[pos_index[1]]
+                neq_hop = hop_0[neg_dst]
+                # print("source_hop", source_hop, source_hop.shape)
+                
+                if args.with_hop ==0:
+                    pos_out = link_pred(h[pos_index[0]], h[pos_index[1]]) #source nodes to target nodes data from h - probability of future pos_index torch.Size([8, 1])
+                    neg_out = link_pred(h[pos_index[0]], h[neg_dst])# from target to some random...torch.Size([8, 1])
+                if args.with_hop ==1:
+                    pos_out = link_pred(h[pos_index[0]], h[pos_index[1]],source_hop, target_hop)
+                    neg_out = link_pred(h[pos_index[0]], h[neg_dst], source_hop, neq_hop)
+                    
                 loss = criterion(pos_out, torch.ones_like(pos_out))
                 loss += criterion(neg_out, torch.zeros_like(neg_out))
 
