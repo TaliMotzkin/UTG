@@ -159,9 +159,46 @@ def test_tgb(h,
 
 
     
-
-
-
+def create_edges_features(extracted_src, extracted_dst, extracted_features, prev_index):
+    # Make canonical order of edges
+    canonical_edges = torch.stack([torch.min(extracted_src, extracted_dst), 
+           torch.max(extracted_src, extracted_dst)], dim=1)
+    unique_edges, inverse_indices = torch.unique(canonical_edges, axis=0, return_inverse=True)
+    
+    feature_dim = extracted_features.shape[1]
+    num_unique_edges = unique_edges.shape[0]
+    aggregated_features = torch.zeros((num_unique_edges, feature_dim), device=extracted_features.device)
+    print("extracted_features", extracted_features)
+    aggregated_features = aggregated_features.scatter_add(0, 
+        inverse_indices_t.unsqueeze(1).expand(-1, feature_dim), 
+        extracted_features
+    )
+    counts = torch.zeros(num_unique_edges, device=extracted_features.device)
+    for i in range(num_unique_edges):
+        counts[i] = (inverse_indices_t == i).sum()
+    #extract average fetures of edges
+    aggregated_features = aggregated_features / counts.unsqueeze(1)
+    print("aggregated_features",  aggregated_features.shape, aggregated_features)
+    
+    edge_mapping = []
+    for src_val, dst_val in zip(prev_index[0].tolist(), prev_index[1].tolist()):
+        #find matching from the snapshot base 
+        cond1 = (unique_edges[:, 0] == src_val) & (unique_edges[:, 1] == dst_val)
+        cond2 = (unique_edges[:, 0] == dst_val) & (unique_edges[:, 1] == src_val)
+        match = cond1 | cond2
+        # If a match exist
+        indices = torch.nonzero(match, as_tuple=True)[0]
+        if indices.numel() > 0:
+            idx = indices[0].item()
+            edge_mapping.append(idx)
+    
+    edge_mapping = torch.tensor(edge_mapping, device=unique_edges.device)
+    
+    #using edge_mapping to get the aggregated features corresponding to each edge in prev_index:
+    edge_attr = aggregated_features[edge_mapping]
+    print("edge_attr", edge_attr, edge_attr.shape)
+    return edge_attr
+    
 
 
 
@@ -298,7 +335,7 @@ if __name__ == '__main__':
                     if ('edge_attr' not in train_data):
                         edge_attr = torch.ones(cur_index.size(1), edge_feat_dim).to(args.device)
             
-
+                        #masking the right edges by timestemps
                         shot_edge_mask = train_edges.t <= train_data['ts_map'][snapshot_idx]
                         
                         shot_edge_idx = torch.nonzero(shot_edge_mask, as_tuple=True)[0]
@@ -306,6 +343,7 @@ if __name__ == '__main__':
                         shot_edge_times = train_edges.t[shot_edge_idx]
                         extracted_src = train_edges.src[shot_edge_idx]
                         extracted_dst = train_edges.dst[shot_edge_idx]
+                        extracted_features = train_edges.msg[shot_edge_idx]
 
                         edges = torch.stack([extracted_src, extracted_dst], dim=1)
                         # print("edges", edges)
@@ -320,7 +358,7 @@ if __name__ == '__main__':
                         # Compare with cur_index (which should be in the same order)
                         assert torch.equal(unique_extracted_src, cur_index[0][:len(unique_extracted_src)]), "Source nodes do not match!" 
                         assert torch.equal(unique_extracted_dst, cur_index[1][:len(unique_extracted_dst)]), "Target nodes do not match!" 
-
+                        edge_attr = create_edges_features(extracted_src, extracted_dst, extracted_features, cur_index)
                         
                     else:
                         raise NotImplementedError("Edge attributes are not yet supported")
@@ -338,8 +376,9 @@ if __name__ == '__main__':
                             shot_edge_mask = train_edges.t <= train_data['ts_map'][snapshot_idx-1]
                         else:
                             shot_edge_mask = (train_edges.t > train_data['ts_map'][snapshot_idx - 2]) & (train_edges.t <= train_data['ts_map'][snapshot_idx-1])
+
+                        #extracting the right data
                         shot_edge_idx = torch.nonzero(shot_edge_mask, as_tuple=True)[0]
-                        
                         shot_edge_times = train_edges.t[shot_edge_idx]
                         extracted_src = train_edges.src[shot_edge_idx]
                         extracted_dst = train_edges.dst[shot_edge_idx]
@@ -349,11 +388,9 @@ if __name__ == '__main__':
                         # print("edges", edges)
                         
                         unique_edges = torch.unique(edges, dim=0)
-                       
                         unique_extracted_src = unique_edges[:, 0]
                         unique_extracted_dst = unique_edges[:, 1]
 
-                        merged_extracted = torch.cat([unique_extracted_src, unique_extracted_dst])
 
                         # print("unique_extracted_src", unique_extracted_src, len(unique_extracted_src))
                         # print("unique_extracted_dst", unique_extracted_dst)
@@ -361,14 +398,12 @@ if __name__ == '__main__':
                         # print("prev_index[0]", prev_index[0])
                         # print("prev_index[1]", prev_index[1])
                         
-                        # Compare with cur_index (which should be in the same order)
+                        # Compare with prev_index (which should be in the same order)
                         assert torch.equal(unique_extracted_src, prev_index[0][:len(unique_extracted_src)]), "Source nodes do not match!" 
                         assert torch.equal(unique_extracted_dst, prev_index[1][:len(unique_extracted_dst)]), "Target nodes do not match!" 
 
-                        
-                        canonical_edges = torch.stack([torch.min(extracted_src, extracted_dst), 
-                               torch.max(extracted_src, extracted_dst)], dim=1)
-                        unique_edges_np, inverse_indices = torch.unique(canonical_edges, axis=0, return_inverse=True)
+                        edge_attr = create_edges_features(extracted_src, extracted_dst, extracted_features, prev_index)
+                                    
                         
                     else:
                         raise NotImplementedError("Edge attributes are not yet supported")
