@@ -163,22 +163,33 @@ def create_edges_features(extracted_src, extracted_dst, extracted_features, prev
     # Make canonical order of edges
     canonical_edges = torch.stack([torch.min(extracted_src, extracted_dst), 
            torch.max(extracted_src, extracted_dst)], dim=1)
-    unique_edges, inverse_indices = torch.unique(canonical_edges, axis=0, return_inverse=True)
+    unique_edges, inverse_indices = torch.unique(canonical_edges, dim=0, return_inverse=True)
     
     feature_dim = extracted_features.shape[1]
     num_unique_edges = unique_edges.shape[0]
     aggregated_features = torch.zeros((num_unique_edges, feature_dim), device=extracted_features.device)
-    print("extracted_features", extracted_features)
     aggregated_features = aggregated_features.scatter_add(0, 
-        inverse_indices_t.unsqueeze(1).expand(-1, feature_dim), 
+        inverse_indices.unsqueeze(1).expand(-1, feature_dim), 
         extracted_features
     )
+ 
     counts = torch.zeros(num_unique_edges, device=extracted_features.device)
     for i in range(num_unique_edges):
-        counts[i] = (inverse_indices_t == i).sum()
+        counts[i] = (inverse_indices == i).sum()
+    
     #extract average fetures of edges
     aggregated_features = aggregated_features / counts.unsqueeze(1)
-    print("aggregated_features",  aggregated_features.shape, aggregated_features)
+
+    # for i in range(num_unique_edges):
+    #     idxs = (inverse_indices == i).nonzero(as_tuple=True)[0]
+    #     if idxs.numel() == 2:
+    #         print(f"Unique edge {i}: {unique_edges[i]} aggregated from events at indices {idxs.tolist()}")
+    #         print("Extracted features for these events:")
+    #         print(extracted_features[idxs])
+    #         print("Averaged feature:")
+    #         print(aggregated_features[i])
+    #         print("-----")
+    # print("==========================================")
     
     edge_mapping = []
     for src_val, dst_val in zip(prev_index[0].tolist(), prev_index[1].tolist()):
@@ -191,12 +202,14 @@ def create_edges_features(extracted_src, extracted_dst, extracted_features, prev
         if indices.numel() > 0:
             idx = indices[0].item()
             edge_mapping.append(idx)
+        else:
+            print(f"Warning: No matching unique edge")
     
     edge_mapping = torch.tensor(edge_mapping, device=unique_edges.device)
     
     #using edge_mapping to get the aggregated features corresponding to each edge in prev_index:
     edge_attr = aggregated_features[edge_mapping]
-    print("edge_attr", edge_attr, edge_attr.shape)
+  
     return edge_attr
     
 
@@ -210,6 +223,8 @@ if __name__ == '__main__':
     from configs import get_args
     from UTG.utils.utils_func import set_random
     from UTG.utils.data_util import loader
+    from NAT.utils import RandEdgeSampler
+
 
     args, argsv = get_args()
     set_random(args.seed)
@@ -253,7 +268,8 @@ if __name__ == '__main__':
     edge_feat_dim = e_feat.shape[1]
     
     NAT_module = init_nat_module(full_data, e_feat, node_feat, train_edges,val_edges, test_edges, args, argsv)
-    
+    random_sampler_train = RandEdgeSampler((train_edges.src, ), (train_edges.dst, ))
+
     
 #     min_dst_idx 0
 # max_dst_idx 352621
@@ -363,14 +379,14 @@ if __name__ == '__main__':
                     else:
                         raise NotImplementedError("Edge attributes are not yet supported")
                     h, h_0, c_0 = model(node_feat, cur_index, edge_attr, h_0, c_0) #random node features and 1s for edge_sttr
-                    if snapshot_idx < 5:
-                        print("edge_attr", edge_attr, edge_attr.shape) # 1, 1..
-                        print("node_feat", node_feat, node_feat.shape ) #random
+                    # if snapshot_idx < 5:
+                    #     print("edge_attr", edge_attr, edge_attr.shape) # 1, 1..
+                    #     print("node_feat", node_feat, node_feat.shape ) #random
                 else: #subsequent snapshot, feed the previous snapshot
                     prev_index = snapshot_list[snapshot_idx-1]
                     prev_index = prev_index.long().to(args.device)
                     if ('edge_attr' not in train_data):
-                        edge_attr = torch.ones(prev_index.size(1), edge_feat_dim).to(args.device)
+                        # edge_attr = torch.ones(prev_index.size(1), edge_feat_dim).to(args.device)
 
                         if snapshot_idx-1 ==0:
                             shot_edge_mask = train_edges.t <= train_data['ts_map'][snapshot_idx-1]
@@ -408,12 +424,13 @@ if __name__ == '__main__':
                     else:
                         raise NotImplementedError("Edge attributes are not yet supported")
                     h, h_0, c_0 = model(node_feat, prev_index, edge_attr, h_0, c_0)
-                    if snapshot_idx < 5:
-                        print("h", h, h.shape) #torch.Size([352638, 256]) - nodes and features
-                        print("h_0", h_0, h_0.shape )
-                        print("c_0", c_0, c_0.shape)
-                        print("prev_index", prev_index, prev_index.shape) #[][] - (2, edges)
-                    else:
+                    # if snapshot_idx < 5:
+                    #     print("h", h, h.shape) #torch.Size([352638, 256]) - nodes and features
+                    #     print("h_0", h_0, h_0.shape )
+                    #     print("c_0", c_0, c_0.shape)
+                    #     print("prev_index", prev_index, prev_index.shape) #[][] - (2, edges)
+                    # else:
+                    if snapshot_idx ==3:
                         break
 
                 pos_index = snapshot_list[snapshot_idx]
@@ -427,6 +444,19 @@ if __name__ == '__main__':
                         device=args.device,
                     )#neg_dst tensor([190263, 191614, 200024, 197477, 136266, 349326,  80000, 289975],
        # device='cuda:0') torch.Size([8]) ->> nodes indexes?
+
+                e_l_cut = shot_edge_idx + 1
+                ts_l_cut = shot_edge_times
+                src_l_cut = extracted_src
+                tgt_l_cut = extracted_dst
+                size = len(src_l_cut)
+                _, bad_l_cut = random_sampler_train.sample(size)
+
+                print("size", size, "src_l_cut", src_l_cut)
+        
+                _, _ = NAT_module.contrast_nat(src_l_cut, tgt_l_cut, bad_l_cut, ts_l_cut, e_l_cut)
+                hop_0 = nat.get_neighborhood_store()[0][0]
+                print("hop_0", hop_0)
 
                 pos_out = link_pred(h[pos_index[0]], h[pos_index[1]]) #source nodes to target nodes data from h - probability of future pos_index torch.Size([8, 1])
                 neg_out = link_pred(h[pos_index[0]], h[neg_dst])# from target to some random...torch.Size([8, 1])
