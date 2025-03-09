@@ -12,12 +12,41 @@ import sys
 import wandb
 import timeit
 from Nat_init import *
+from typing import List
+from timings import *
+from torch.utils.tensorboard import SummaryWriter
 
 project_root = os.path.abspath('.')
 sys.path.insert(0, project_root)
 sys.path.insert(0, os.path.join(project_root, 'TGX'))
 sys.path.insert(0, os.path.join(project_root, 'NAT'))
 
+from torch_geometric.data import TemporalData
+writer = SummaryWriter(log_dir="runs/experiment_1")
+
+class IndexedTemporalDataLoader(TemporalDataLoader):
+    def __call__(self, arange: List[int]) -> TemporalData:
+        start = arange[0]
+        end = start + self.events_per_batch
+        batch = self.data[start:end]
+        
+        # This ensures that if a batch starts at index 32, then the indices are [32, 33, ..., 32 + events_per_batch - 1].
+        global_edge_indices = torch.arange(start, min(end, len(self.data)), device=batch.src.device)
+        batch.edge_indices = global_edge_indices
+        
+        n_ids = [batch.src, batch.dst]
+        if self.neg_sampling_ratio > 0:
+            batch.neg_dst = torch.randint(
+                low=self.min_dst,
+                high=self.max_dst + 1,
+                size=(round(self.neg_sampling_ratio * batch.dst.size(0)), ),
+                dtype=batch.dst.dtype,
+                device=batch.dst.device,
+            )
+            n_ids += [batch.neg_dst]
+        batch.n_id = torch.cat(n_ids, dim=0).unique()
+        
+        return batch
 
 class RecurrentGCN(torch.nn.Module):
     def __init__(self, node_feat_dim, hidden_dim, K=1):
@@ -103,7 +132,7 @@ class LinkPredictor(torch.nn.Module):
 
 
 
-def test_tgb(h,
+def test_tgb(val_edges,interval, random_sampler, NAT_module, h,
              h_0,
              c_0, 
              test_loader, 
@@ -124,17 +153,35 @@ def test_tgb(h,
     ts_idx = min(list(ts_list.keys()))
     max_ts_idx = max(list(ts_list.keys()))
 
+    # print("ts_idx", ts_idx)
+    # print("ts_list", ts_list)
+
     for batch in test_loader:
-        pos_src, pos_dst, pos_t, pos_msg = (
+        pos_src, pos_dst, pos_t, pos_msg, pos_index = (
         batch.src,
         batch.dst,
         batch.t,
         batch.msg,
+        batch.edge_indices 
         )
         #"query_batch" - For each positive edge in the `pos_batch`, return a list of negative edges
        # `split_mode` specifies whether the valiation or test evaluation set should be retrieved.
        # modify now to include edge type argument
         neg_batch_list = neg_sampler.query_batch(np.array(pos_src.cpu()), np.array(pos_dst.cpu()), np.array(pos_t.cpu()), split_mode=split_mode)
+
+
+        #calculating hop neighboors up to the next ts_idx update
+        # if ts_idx == 0:
+        #     shot_edge_mask = val_edges.t <= ts_list[ts_idx]
+        # else:
+        #     shot_edge_mask = (val_edges.t > ts_list[ts_idx - 1]) & (val_edges.t <= ts_list[ts_idx]) 
+        # shot_edge_idx = torch.nonzero(shot_edge_mask, as_tuple=True)[0]
+        # ts_l_cut  = val_edges.t[shot_edge_idx]
+        # src_l_cut  = val_edges.src[shot_edge_idx]
+        # tgt_l_cut = val_edges.dst[shot_edge_idx]
+        # e_l_cut = shot_edge_idx +1
+
+        
         
         #^^a list of list; each internal list contains the set of negative edges that
                        # should be evaluated against each positive edge.
@@ -147,8 +194,24 @@ def test_tgb(h,
                         ),
                         device=args.device,
                     )
+            # print("bb", len(neg_batch))
+            # print("query_src", query_src, query_src.shape)
             with torch.no_grad():
-                y_pred = link_pred(h[query_src], h[query_dst])
+                NAT_module.nat.eval()
+                if idx ==0: #no need to calculate over the same batch again and again 
+                    size = len(pos_src)
+                    _, bad_l_cut = random_sampler.sample(size)
+                    _, _ = NAT_module.contrast_nat(pos_src, pos_dst, bad_l_cut, pos_t, pos_index)
+                hop_0 = NAT_module.nat.get_neighborhood_store()[0]
+                source_hop = hop_0[query_src]
+                target_hop = hop_0[query_dst]
+                if getattr(args, "with_hop", 0) == 1:
+                    # print("source_hop", source_hop.shape)
+                    # print("len(neg_batch)", len(neg_batch))
+                    # print("h[query_src]", h[query_src].shape)
+                    y_pred = link_pred(h[query_src], h[query_dst], source_hop, target_hop)
+                else:
+                    y_pred = link_pred(h[query_src], h[query_dst])
             y_pred = y_pred.squeeze(dim=-1).detach()
 
             input_dict = {
@@ -158,23 +221,57 @@ def test_tgb(h,
             }
             perf_list.append(evaluator.eval(input_dict)[metric])
         
+
         #* update the model now if the prediction batch has moved to next snapshot
         while (pos_t[-1] > ts_list[ts_idx] and ts_idx < max_ts_idx):
+            # print("pos_t[-1]", pos_t[-1], ts_list[ts_idx])
             with torch.no_grad():
+                # print("val_edges", val_edges[0:200].src, val_edges[0:200].dst, val_edges[0:200].t)
                 cur_index = test_snapshots[ts_idx]
                 cur_index = cur_index.long().to(args.device)
-                edge_attr = torch.ones(cur_index.size(1), edge_feat_dim).to(args.device)
+                # edge_attr = torch.ones(cur_index.size(1), edge_feat_dim).to(args.device)
+                
+                if ts_idx == 0:
+                    shot_edge_mask = val_edges.t < ts_list[ts_idx]
+                elif ts_idx == min(list(ts_list.keys())):
+                    minimal_time = max(0, min( ts_list[ts_idx],  ts_list[ts_idx] - interval))
+                    shot_edge_mask = (val_edges.t >= minimal_time) & (val_edges.t <= ts_list[ts_idx])
+                else:
+                    shot_edge_mask = (val_edges.t >= ts_list[ts_idx - 1]) & (val_edges.t <= ts_list[ts_idx])
+                shot_edge_idx = torch.nonzero(shot_edge_mask, as_tuple=True)[0]
+                extracted_src = val_edges.src[shot_edge_idx] 
+                extracted_dst = val_edges.dst[shot_edge_idx] 
+                extracted_features = val_edges.msg[shot_edge_idx]
+
+                # print("extracted_src", extracted_src, extracted_src.shape)
+                # print("extracted_dst", extracted_dst, extracted_dst.shape)
+                # print("extracted_features", extracted_features, extracted_features.shape)
+                # print("cur_index", cur_index, cur_index.shape)
+                edge_attr = create_edges_features(extracted_src, extracted_dst, extracted_features, cur_index)
+
+                # print("node_feat", node_feat.shape)
+                # print("cur_index", cur_index, cur_index.shape)
+                # print("edge_attr", edge_attr.shape)
                 h, h_0, c_0 = model(node_feat, cur_index, edge_attr, h_0, c_0)
                 h = h.detach()
                 h_0 = h_0.detach()
                 c_0 = c_0.detach()
             ts_idx += 1
+            # print("ts_idx", ts_idx)
 
     #* update to the final snapshot
     with torch.no_grad():
+        # print("max_ts_idx", max_ts_idx)
         cur_index = test_snapshots[max_ts_idx]
         cur_index = cur_index.long().to(args.device)
-        edge_attr = torch.ones(cur_index.size(1), edge_feat_dim).to(args.device)
+        shot_edge_mask = (val_edges.t >= ts_list[max_ts_idx - 1]) & (val_edges.t <= ts_list[max_ts_idx])
+        shot_edge_idx = torch.nonzero(shot_edge_mask, as_tuple=True)[0]
+        extracted_src = val_edges.src[shot_edge_idx]
+        extracted_dst = val_edges.dst[shot_edge_idx]
+        extracted_features = val_edges.msg[shot_edge_idx]
+        edge_attr = create_edges_features(extracted_src, extracted_dst, extracted_features, cur_index)
+
+        # edge_attr = torch.ones(cur_index.size(1), edge_feat_dim).to(args.device)
         h, h_0, c_0 = model(node_feat, cur_index, edge_attr, h_0, c_0)
         h = h.detach()
         h_0 = h_0.detach()
@@ -195,6 +292,9 @@ def create_edges_features(extracted_src, extracted_dst, extracted_features, prev
     
     feature_dim = extracted_features.shape[1]
     num_unique_edges = unique_edges.shape[0]
+    # print("num_unique_edges", num_unique_edges)
+    # print("unique_edges", unique_edges, unique_edges.shape)
+    # print("inverse_indices", inverse_indices, inverse_indices.shape)
     aggregated_features = torch.zeros((num_unique_edges, feature_dim), device=extracted_features.device)
     aggregated_features = aggregated_features.scatter_add(0, 
         inverse_indices.unsqueeze(1).expand(-1, feature_dim), 
@@ -231,10 +331,11 @@ def create_edges_features(extracted_src, extracted_dst, extracted_features, prev
             idx = indices[0].item()
             edge_mapping.append(idx)
         else:
+            print(src_val, dst_val)
             print(f"Warning: No matching unique edge")
     
     edge_mapping = torch.tensor(edge_mapping, device=unique_edges.device)
-    
+
     #using edge_mapping to get the aggregated features corresponding to each edge in prev_index:
     edge_attr = aggregated_features[edge_mapping]
   
@@ -277,9 +378,9 @@ if __name__ == '__main__':
     evaluator = Evaluator(name=args.dataset) #evaluation class
     min_dst_idx, max_dst_idx = int(full_data.dst.min()), int(full_data.dst.max()) #dst - A list of destination nodes for the events with shape [num_events]
 
-    print("print data properties in the 0 link", full_data.src [0],full_data.dst[0],full_data.t[0],
-                full_data.msg[0],
-                full_data.y[0])
+    # print("print data properties in the 0 link", full_data.src [0],full_data.dst[0],full_data.t[0],
+    #             full_data.msg[0],
+    #             full_data.y[0])
 
     #! set up node features
     node_feat = dataset.node_feat #NONE ---> node features of the dataset with dim [N, feat_dim] , uniq_nodes!!
@@ -291,12 +392,6 @@ if __name__ == '__main__':
         print("Node is none")
         node_feat_dim = 172 # was 256 in UTG, in NAT is 172
         node_feat = torch.randn((full_data.num_nodes,node_feat_dim)).to(args.device)
-
-    e_feat = full_data.msg
-    edge_feat_dim = e_feat.shape[1]
-    
-    NAT_module = init_nat_module(full_data, e_feat, node_feat, train_edges,val_edges, test_edges, args, argsv)
-    random_sampler_train = RandEdgeSampler((train_edges.src.cpu().numpy(), ), (train_edges.dst.cpu().numpy(), ))
 
     
 #     min_dst_idx 0
@@ -331,13 +426,50 @@ if __name__ == '__main__':
         #'original_edges': edge_index_list, #just original list -< not having that!!
 
     #num nodes 352637, time_length 207, ts maps 207 to unix, "edge index" maps 207 to edge indexes --> how can we know the nodes which are participating in the edge?
-    val_data = data['val_data']
+    val_data = data['val_data'] 
     test_data = data['test_data']
-    num_nodes = data['train_data']['num_nodes'] + 1
+    num_nodes = data['train_data']['num_nodes'] 
+        #NOt sure why in UTG they are adding 1?..
+    # num_nodes = data['train_data']['num_nodes'] + 1
+
+    interval = time_intervals(args.time_scale)
+
+    #this is not working since in the negative batch (query_batch) sampling they are using the past framework)
+    # train_ts_map = train_data['ts_map']  # e.g., {0: 0, 1: 3600, 2: 7200, ...}
+    # train_min_time = max(0,min(min(train_ts_map.values()),min(train_ts_map.values())- interval))
+    # train_max_time = max(train_ts_map.values())
+    # train_mask = (full_data.t >= train_min_time) & (full_data.t < train_max_time)
+
+    # val_ts_map = val_data['ts_map']
+    # val_min_time = max(0,min(min(val_ts_map.values()),min(val_ts_map.values())- interval))
+    # val_max_time = max(val_ts_map.values())
+    # val_mask = (full_data.t >= val_min_time) & (full_data.t < val_max_time)
+
+    # test_ts_map = test_data['ts_map']
+    # test_min_time = max(0,min(min(test_ts_map.values()),min(test_ts_map.values())- interval))
+    # test_max_time = max(test_ts_map.values())
+    # test_mask = (full_data.t >= test_min_time) & (full_data.t <= test_max_time)
+
+    # train_edges = full_data[train_mask]
+    # val_edges = full_data[val_mask]
+    # test_edges = full_data[test_mask]
+
+    # print("train_edges!!", train_edges)
+    # print("val_edges", val_edges.t)
+    e_feat = full_data.msg
+    edge_feat_dim = e_feat.shape[1]
+    
+    NAT_module = init_nat_module(full_data, e_feat, node_feat, train_edges,val_edges, test_edges, args, argsv)
+    random_sampler_train = RandEdgeSampler((train_edges.src.cpu().numpy(), ), (train_edges.dst.cpu().numpy(), ))
+    random_sampler_test = RandEdgeSampler((test_edges.src.cpu().numpy(), ), (test_edges.dst.cpu().numpy(), ))
+    random_sampler_val = RandEdgeSampler((val_edges.src.cpu().numpy(), ), (val_edges.dst.cpu().numpy(), ))
+    
+
     num_epochs = args.max_epoch
     lr = args.lr
 
-
+    runs_best_val = []
+    runs_best_test = []
     for seed in range(args.seed, args.seed + args.num_runs):
         set_random(seed)
         print (f"Run {seed}")
@@ -372,7 +504,7 @@ if __name__ == '__main__':
 
             NAT_module.nat.reset_store()
             NAT_module.nat.reset_self_rep()
-            
+            NAT_module.nat.train()
             train_start_time = timeit.default_timer()
             optimizer.zero_grad()
             total_loss = 0
@@ -384,7 +516,6 @@ if __name__ == '__main__':
             h_0, c_0, h = None, None, None
             total_loss = 0
             for snapshot_idx in range(train_data['time_length']): #207
-
                 optimizer.zero_grad()
                 if (snapshot_idx == 0): #first snapshot, feed the current snapshot
                     cur_index = snapshot_list[snapshot_idx] #edge indexes
@@ -412,10 +543,11 @@ if __name__ == '__main__':
                         unique_extracted_dst = unique_edges[:, 1]
 
                         merged_extracted = torch.cat([unique_extracted_src, unique_extracted_dst])
-                        
                         # Compare with cur_index (which should be in the same order)
                         assert torch.equal(unique_extracted_src, cur_index[0][:len(unique_extracted_src)]), "Source nodes do not match!" 
                         assert torch.equal(unique_extracted_dst, cur_index[1][:len(unique_extracted_dst)]), "Target nodes do not match!" 
+                        # print("train_edges", train_edges[450:].src, train_edges[450:].dst, val_edges[450:].t)
+                        # print("train_data", train_data["ts_map"])
                         edge_attr = create_edges_features(extracted_src, extracted_dst, extracted_features, cur_index)
                         
                     else:
@@ -472,8 +604,8 @@ if __name__ == '__main__':
                     #     print("c_0", c_0, c_0.shape)
                     #     print("prev_index", prev_index, prev_index.shape) #[][] - (2, edges)
                     # else:
-                    if snapshot_idx ==3:
-                        break
+                    # if snapshot_idx ==3:
+                    #     break
 
                 pos_index = snapshot_list[snapshot_idx]
                 pos_index = pos_index.long().to(args.device)
@@ -498,7 +630,9 @@ if __name__ == '__main__':
         
                 _, _ = NAT_module.contrast_nat(src_l_cut, tgt_l_cut, bad_l_cut, ts_l_cut, e_l_cut)
                 hop_0 = NAT_module.nat.get_neighborhood_store()[0]
+                
                 # print("hop_0", hop_0.shape)
+                # print("num_nodes", num_nodes)
                 source_hop = hop_0[pos_index[0]]
                 target_hop = hop_0[pos_index[1]]
                 neq_hop = hop_0[neg_dst]
@@ -530,13 +664,13 @@ if __name__ == '__main__':
             #? Evaluation starts here
             val_snapshots = data['val_data']['edge_index']
             ts_list = data['val_data']['ts_map']
-            val_loader = TemporalDataLoader(val_edges, batch_size=batch_size)
+            val_loader = IndexedTemporalDataLoader(val_edges, batch_size=batch_size)
             evaluator = Evaluator(name=args.dataset)
             neg_sampler = dataset.negative_sampler
             dataset.load_val_ns()
 
             start_epoch_val = timeit.default_timer()
-            val_metrics, h, h_0, c_0 = test_tgb(h, h_0, c_0, val_loader, val_snapshots, ts_list,
+            val_metrics, h, h_0, c_0 = test_tgb(full_data, interval,random_sampler_val, NAT_module, h, h_0, c_0, val_loader, val_snapshots, ts_list,
                 node_feat,model, link_pred,neg_sampler,evaluator,metric, split_mode='val')
             val_time = timeit.default_timer() - start_epoch_val
             print(f"Val {metric}: {val_metrics}")
@@ -547,22 +681,25 @@ if __name__ == '__main__':
                         "train time": train_time,
                         "val time": val_time,
                         })
-                
+            writer.add_scalar("Loss/train", total_loss, epoch)
+            writer.add_scalar("MRR/val", val_metrics, epoch)
             #! report test results when validation improves
             if (val_metrics > best_val):
                 dataset.load_test_ns()
                 test_snapshots = data['test_data']['edge_index']
                 ts_list = data['test_data']['ts_map']
-                test_loader = TemporalDataLoader(test_edges, batch_size=batch_size)
+                test_loader = IndexedTemporalDataLoader(test_edges, batch_size=batch_size)
                 neg_sampler = dataset.negative_sampler
                 dataset.load_test_ns()
 
                 test_start_time = timeit.default_timer()
-                test_metrics, h, h_0, c_0 = test_tgb(h, h_0, c_0, test_loader, test_snapshots, ts_list,
+                test_metrics, h, h_0, c_0 = test_tgb(full_data, interval,random_sampler_test, NAT_module,h, h_0, c_0, test_loader, test_snapshots, ts_list,
                 node_feat,model, link_pred,neg_sampler,evaluator,metric, split_mode='test')
                 test_time = timeit.default_timer() - test_start_time
                 best_val = val_metrics
                 best_test = test_metrics
+
+                writer.add_scalar("MRR/test", test_metrics, epoch)
 
                 print ("test metric is ", test_metrics)
                 print ("test elapsed time is ", test_time)
@@ -576,3 +713,19 @@ if __name__ == '__main__':
         print ("best val performance is, ", best_val)
         print ("best test performance is, ", best_test)
         print ("------------------------------------------")
+
+        runs_best_val.append(best_val)
+        runs_best_test.append(best_test)
+    runs_best_val = np.array(runs_best_val)
+    runs_best_test = np.array(runs_best_test)
+    
+    val_mean, val_std = runs_best_val.mean(), runs_best_val.std(ddof=1)
+    test_mean, test_std = runs_best_test.mean(), runs_best_test.std(ddof=1)
+    
+    print("========================================")
+    print(f"Summary of {args.num_runs} runs:")
+    print(f"Val MRR: mean={val_mean:.4f} ± {val_std:.4f}")
+    print(f"Test MRR: mean={test_mean:.4f} ± {test_std:.4f}")
+    print("========================================")
+    
+    writer.close()
