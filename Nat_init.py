@@ -89,7 +89,7 @@ class init_nat_module():
         nat.reset_store()
         return nat
 
-    def contrast_nat(src_l_cut, tgt_l_cut, bad_l_cut, ts_l_cut, e_l_cut):
+    def contrast_nat(self, src_l_cut, tgt_l_cut, bad_l_cut, ts_l_cut, e_l_cut):
 
         pos_prob, neg_prob = self.nat.contrast(src_l_cut, tgt_l_cut, bad_l_cut, ts_l_cut, e_l_cut)
 
