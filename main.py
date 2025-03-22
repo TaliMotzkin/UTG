@@ -78,7 +78,7 @@ class RecurrentGCN(torch.nn.Module):
 class LinkPredictorWithHop(torch.nn.Module):
     def __init__(self, in_channels, hop_dim, hidden_channels, out_channels, num_layers, dropout):
         super(LinkPredictorWithHop, self).__init__()
-        self.input_dim = in_channels + hop_dim
+        self.input_dim = in_channels
         
         self.lins = torch.nn.ModuleList()
         self.lins.append(torch.nn.Linear(self.input_dim, hidden_channels))
@@ -91,11 +91,12 @@ class LinkPredictorWithHop(torch.nn.Module):
         for lin in self.lins:
             lin.reset_parameters()
 
-    def forward(self, x_i, x_j, source_hop, target_hop):
-        combined_x_i = torch.cat([x_i, source_hop], dim=1)
-        combined_x_j = torch.cat([x_j, target_hop], dim=1)
+    def forward(self, x_i, x_j, hop):
+        # combined_x_i = torch.cat([x_i, source_hop], dim=1)
+        # combined_x_j = torch.cat([x_j, target_hop], dim=1)
         
-        x = combined_x_i * combined_x_j
+        x = x_i * x_j
+        x = x + hop
         
         for lin in self.lins[:-1]:
             x = lin(x)
@@ -198,25 +199,24 @@ def test_tgb(val_edges,interval, random_sampler, NAT_module, h,
             # print("query_src", query_src, query_src.shape)
             with torch.no_grad():
                 NAT_module.nat.eval()
-                if idx ==0: #no need to calculate over the same batch again and again 
+                if getattr(args, "with_hop", 0) == 1 and idx ==0: #no need to calculate over the same batch again and again 
                     size = len(pos_src)
-                    _, bad_l_cut = random_sampler.sample(size)
-                    _, _ = NAT_module.contrast_nat(pos_src, pos_dst, bad_l_cut, pos_t, pos_index)
-                hop_0 = NAT_module.nat.get_neighborhood_store()[0]
-                source_hop = hop_0[query_src]
-                target_hop = hop_0[query_dst]
-                if getattr(args, "with_hop", 0) == 1:
-                    # print("source_hop", source_hop.shape)
-                    # print("len(neg_batch)", len(neg_batch))
-                    # print("h[query_src]", h[query_src].shape)
-                    y_pred = link_pred(h[query_src], h[query_dst], source_hop, target_hop)
+                    _, bad_l_cut = neg_batch[:size]
+                    pos_nat, bad_nat = NAT_module.contrast_nat(pos_src, pos_dst, bad_l_cut, pos_t, pos_index)
+                    y_pos = link_pred(h[query_src[0]], h[query_dst[0]], pos_nat)
+                    y_neg = link_pred(h[query_src[1:]], h[query_dst[1:]], bad_nat)
+                elif if getattr(args, "with_hop", 0) == 1:
+                    y_pos = link_pred(h[query_src[0]], h[query_dst[0]], pos_nat)
+                    y_neg = link_pred(h[query_src[1:]], h[query_dst[1:]], bad_nat)
                 else:
-                    y_pred = link_pred(h[query_src], h[query_dst])
-            y_pred = y_pred.squeeze(dim=-1).detach()
+                    y_pos = link_pred(h[query_src[0]], h[query_dst[0]])
+                    y_neg = link_pred(h[query_src[1:]], h[query_dst[1:]])
+            y_pos = y_pos.squeeze(dim=-1).detach()
+            y_neg = y_neg.squeeze(dim=-1).detach()
 
             input_dict = {
-            "y_pred_pos": np.array([y_pred[0].cpu()]),
-            "y_pred_neg": np.array(y_pred[1:].cpu()),
+            "y_pred_pos": np.array(y_pos.cpu()]),
+            "y_pred_neg": np.array(y_neg.cpu()),
             "eval_metric": [metric],
             }
             perf_list.append(evaluator.eval(input_dict)[metric])
@@ -231,23 +231,24 @@ def test_tgb(val_edges,interval, random_sampler, NAT_module, h,
                 cur_index = cur_index.long().to(args.device)
                 # edge_attr = torch.ones(cur_index.size(1), edge_feat_dim).to(args.device)
                 
-                if ts_idx == 0:
-                    shot_edge_mask = val_edges.t < ts_list[ts_idx]
-                elif ts_idx == min(list(ts_list.keys())):
-                    minimal_time = max(0, min( ts_list[ts_idx],  ts_list[ts_idx] - interval))
-                    shot_edge_mask = (val_edges.t >= minimal_time) & (val_edges.t <= ts_list[ts_idx])
-                else:
-                    shot_edge_mask = (val_edges.t >= ts_list[ts_idx - 1]) & (val_edges.t <= ts_list[ts_idx])
-                shot_edge_idx = torch.nonzero(shot_edge_mask, as_tuple=True)[0]
-                extracted_src = val_edges.src[shot_edge_idx] 
-                extracted_dst = val_edges.dst[shot_edge_idx] 
-                extracted_features = val_edges.msg[shot_edge_idx]
+                # if ts_idx == 0:
+                #     shot_edge_mask = val_edges.t < ts_list[ts_idx]
+                # elif ts_idx == min(list(ts_list.keys())):
+                #     minimal_time = max(0, min( ts_list[ts_idx],  ts_list[ts_idx] - interval))
+                #     shot_edge_mask = (val_edges.t >= minimal_time) & (val_edges.t <= ts_list[ts_idx])
+                # else:
+                #     shot_edge_mask = (val_edges.t >= ts_list[ts_idx - 1]) & (val_edges.t <= ts_list[ts_idx])
+                # shot_edge_idx = torch.nonzero(shot_edge_mask, as_tuple=True)[0]
+                # extracted_src = val_edges.src[shot_edge_idx] 
+                # extracted_dst = val_edges.dst[shot_edge_idx] 
+                # extracted_features = val_edges.msg[shot_edge_idx]
 
                 # print("extracted_src", extracted_src, extracted_src.shape)
                 # print("extracted_dst", extracted_dst, extracted_dst.shape)
                 # print("extracted_features", extracted_features, extracted_features.shape)
                 # print("cur_index", cur_index, cur_index.shape)
-                edge_attr = create_edges_features(extracted_src, extracted_dst, extracted_features, cur_index)
+                edge_attr = torch.ones(cur_index.size(1), edge_feat_dim).to(args.device)
+                # edge_attr = create_edges_features(extracted_src, extracted_dst, extracted_features, cur_index)
 
                 # print("node_feat", node_feat.shape)
                 # print("cur_index", cur_index, cur_index.shape)
@@ -264,14 +265,14 @@ def test_tgb(val_edges,interval, random_sampler, NAT_module, h,
         # print("max_ts_idx", max_ts_idx)
         cur_index = test_snapshots[max_ts_idx]
         cur_index = cur_index.long().to(args.device)
-        shot_edge_mask = (val_edges.t >= ts_list[max_ts_idx - 1]) & (val_edges.t <= ts_list[max_ts_idx])
-        shot_edge_idx = torch.nonzero(shot_edge_mask, as_tuple=True)[0]
-        extracted_src = val_edges.src[shot_edge_idx]
-        extracted_dst = val_edges.dst[shot_edge_idx]
-        extracted_features = val_edges.msg[shot_edge_idx]
-        edge_attr = create_edges_features(extracted_src, extracted_dst, extracted_features, cur_index)
+        # shot_edge_mask = (val_edges.t >= ts_list[max_ts_idx - 1]) & (val_edges.t <= ts_list[max_ts_idx])
+        # shot_edge_idx = torch.nonzero(shot_edge_mask, as_tuple=True)[0]
+        # extracted_src = val_edges.src[shot_edge_idx]
+        # extracted_dst = val_edges.dst[shot_edge_idx]
+        # extracted_features = val_edges.msg[shot_edge_idx]
+        # edge_attr = create_edges_features(extracted_src, extracted_dst, extracted_features, cur_index)
 
-        # edge_attr = torch.ones(cur_index.size(1), edge_feat_dim).to(args.device)
+        edge_attr = torch.ones(cur_index.size(1), edge_feat_dim).to(args.device)
         h, h_0, c_0 = model(node_feat, cur_index, edge_attr, h_0, c_0)
         h = h.detach()
         h_0 = h_0.detach()
@@ -475,14 +476,17 @@ if __name__ == '__main__':
         print (f"Run {seed}")
         
         #* initialization of the model to prep for training
-        model = RecurrentGCN(node_feat_dim=node_feat_dim, hidden_dim=hidden_dim, K=1).to(args.device)
+        if args.with_hop == 0:
+            model = RecurrentGCN(node_feat_dim=node_feat_dim, hidden_dim=hidden_dim, K=1).to(args.device)
+        else:
+            model = RecurrentGCN(node_feat_dim=node_feat_dim, hidden_dim=node_feat_dim+2*args.self_dim, K=1).to(args.device)
         node_feat = torch.randn((num_nodes, node_feat_dim)).to(args.device)
 
         if args.with_hop == 0:
             link_pred = LinkPredictor(hidden_dim, hidden_dim, 1,
                                 2, 0.2).to(args.device)
         if args.with_hop == 1:
-            link_pred = LinkPredictorWithHop(in_channels=hidden_dim, 
+            link_pred = LinkPredictorWithHop(in_channels=node_feat_dim+2*args.self_dim, 
                                  hop_dim=7, 
                                  hidden_channels=hidden_dim, 
                                  out_channels=1, 
@@ -534,21 +538,21 @@ if __name__ == '__main__':
                         extracted_dst = train_edges.dst[shot_edge_idx]
                         extracted_features = train_edges.msg[shot_edge_idx]
 
-                        edges = torch.stack([extracted_src, extracted_dst], dim=1)
-                        # print("edges", edges)
+                        # edges = torch.stack([extracted_src, extracted_dst], dim=1)
+                        # # print("edges", edges)
                         
-                        unique_edges = torch.unique(edges, dim=0)
+                        # unique_edges = torch.unique(edges, dim=0)
                        
-                        unique_extracted_src = unique_edges[:, 0]
-                        unique_extracted_dst = unique_edges[:, 1]
+                        # unique_extracted_src = unique_edges[:, 0]
+                        # unique_extracted_dst = unique_edges[:, 1]
 
-                        merged_extracted = torch.cat([unique_extracted_src, unique_extracted_dst])
-                        # Compare with cur_index (which should be in the same order)
-                        assert torch.equal(unique_extracted_src, cur_index[0][:len(unique_extracted_src)]), "Source nodes do not match!" 
-                        assert torch.equal(unique_extracted_dst, cur_index[1][:len(unique_extracted_dst)]), "Target nodes do not match!" 
+                        # merged_extracted = torch.cat([unique_extracted_src, unique_extracted_dst])
+                        # # Compare with cur_index (which should be in the same order)
+                        # assert torch.equal(unique_extracted_src, cur_index[0][:len(unique_extracted_src)]), "Source nodes do not match!" 
+                        # assert torch.equal(unique_extracted_dst, cur_index[1][:len(unique_extracted_dst)]), "Target nodes do not match!" 
                         # print("train_edges", train_edges[450:].src, train_edges[450:].dst, val_edges[450:].t)
                         # print("train_data", train_data["ts_map"])
-                        edge_attr = create_edges_features(extracted_src, extracted_dst, extracted_features, cur_index)
+                        # edge_attr = create_edges_features(extracted_src, extracted_dst, extracted_features, cur_index)
                         
                     else:
                         raise NotImplementedError("Edge attributes are not yet supported")
@@ -562,10 +566,10 @@ if __name__ == '__main__':
                     if ('edge_attr' not in train_data):
                         # edge_attr = torch.ones(prev_index.size(1), edge_feat_dim).to(args.device)
 
-                        if snapshot_idx-1 ==0:
-                            shot_edge_mask = train_edges.t <= train_data['ts_map'][snapshot_idx-1]
-                        else:
-                            shot_edge_mask = (train_edges.t > train_data['ts_map'][snapshot_idx - 2]) & (train_edges.t <= train_data['ts_map'][snapshot_idx-1])
+                        # if snapshot_idx-1 ==0:
+                        #     shot_edge_mask = train_edges.t <= train_data['ts_map'][snapshot_idx-1]
+                        # else:
+                        shot_edge_mask = (train_edges.t > train_data['ts_map'][snapshot_idx - 1]) & (train_edges.t <= train_data['ts_map'][snapshot_idx])
 
                         #extracting the right data
                         shot_edge_idx = torch.nonzero(shot_edge_mask, as_tuple=True)[0]
@@ -574,25 +578,25 @@ if __name__ == '__main__':
                         extracted_dst = train_edges.dst[shot_edge_idx]
                         extracted_features = train_edges.msg[shot_edge_idx]
                         
-                        edges = torch.stack([extracted_src, extracted_dst], dim=1)
-                        # print("edges", edges)
+                        # edges = torch.stack([extracted_src, extracted_dst], dim=1)
+                        # # print("edges", edges)
                         
-                        unique_edges = torch.unique(edges, dim=0)
-                        unique_extracted_src = unique_edges[:, 0]
-                        unique_extracted_dst = unique_edges[:, 1]
+                        # unique_edges = torch.unique(edges, dim=0)
+                        # unique_extracted_src = unique_edges[:, 0]
+                        # unique_extracted_dst = unique_edges[:, 1]
 
 
-                        # print("unique_extracted_src", unique_extracted_src, len(unique_extracted_src))
-                        # print("unique_extracted_dst", unique_extracted_dst)
-                        # print("merged_extracted", merged_extracted)
-                        # print("prev_index[0]", prev_index[0])
-                        # print("prev_index[1]", prev_index[1])
+                        # # print("unique_extracted_src", unique_extracted_src, len(unique_extracted_src))
+                        # # print("unique_extracted_dst", unique_extracted_dst)
+                        # # print("merged_extracted", merged_extracted)
+                        # # print("prev_index[0]", prev_index[0])
+                        # # print("prev_index[1]", prev_index[1])
                         
-                        # Compare with prev_index (which should be in the same order)
-                        assert torch.equal(unique_extracted_src, prev_index[0][:len(unique_extracted_src)]), "Source nodes do not match!" 
-                        assert torch.equal(unique_extracted_dst, prev_index[1][:len(unique_extracted_dst)]), "Target nodes do not match!" 
+                        # # Compare with prev_index (which should be in the same order)
+                        # assert torch.equal(unique_extracted_src, prev_index[0][:len(unique_extracted_src)]), "Source nodes do not match!" 
+                        # assert torch.equal(unique_extracted_dst, prev_index[1][:len(unique_extracted_dst)]), "Target nodes do not match!" 
 
-                        edge_attr = create_edges_features(extracted_src, extracted_dst, extracted_features, prev_index)
+                        # edge_attr = create_edges_features(extracted_src, extracted_dst, extracted_features, prev_index)
                                     
                         
                     else:
@@ -610,40 +614,36 @@ if __name__ == '__main__':
                 pos_index = snapshot_list[snapshot_idx]
                 pos_index = pos_index.long().to(args.device)
 
-                neg_dst = torch.randint(
-                        0,
-                        num_nodes,
-                        (pos_index.shape[1],), #num of edges
-                        dtype=torch.long,
-                        device=args.device,
-                    )#neg_dst tensor([190263, 191614, 200024, 197477, 136266, 349326,  80000, 289975],
+                neg_dst = torch.randint( 0, num_nodes, (pos_index.shape[1],), dtype=torch.long, device=args.device)#neg_dst tensor([190263, 191614, 200024, 197477, 136266, 349326,  80000, 289975],
        # device='cuda:0') torch.Size([8]) ->> nodes indexes?
 
-                e_l_cut = shot_edge_idx + 1
-                ts_l_cut = shot_edge_times
-                src_l_cut = extracted_src
-                tgt_l_cut = extracted_dst
-                size = len(src_l_cut)
-                _, bad_l_cut = random_sampler_train.sample(size)
+                
+                
+                
 
                 # print("size", size, "src_l_cut", src_l_cut)
-        
-                _, _ = NAT_module.contrast_nat(src_l_cut, tgt_l_cut, bad_l_cut, ts_l_cut, e_l_cut)
-                hop_0 = NAT_module.nat.get_neighborhood_store()[0]
-                
-                # print("hop_0", hop_0.shape)
-                # print("num_nodes", num_nodes)
-                source_hop = hop_0[pos_index[0]]
-                target_hop = hop_0[pos_index[1]]
-                neq_hop = hop_0[neg_dst]
-                # print("source_hop", source_hop, source_hop.shape)
                 
                 if args.with_hop ==0:
+                    neg_dst = torch.randint( 0, num_nodes, (pos_index.shape[1],), dtype=torch.long, device=args.device)
                     pos_out = link_pred(h[pos_index[0]], h[pos_index[1]]) #source nodes to target nodes data from h - probability of future pos_index torch.Size([8, 1])
                     neg_out = link_pred(h[pos_index[0]], h[neg_dst])# from target to some random...torch.Size([8, 1])
                 if args.with_hop ==1:
-                    pos_out = link_pred(h[pos_index[0]], h[pos_index[1]],source_hop, target_hop)
-                    neg_out = link_pred(h[pos_index[0]], h[neg_dst], source_hop, neq_hop)
+                    e_l_cut = shot_edge_idx + 1
+                    ts_l_cut = shot_edge_times
+                    src_l_cut = extracted_src
+                    tgt_l_cut = extracted_dst
+                    size_snap = pos_index.shape[1]
+                    size_cut = len(src_l_cut)
+                    if size_cut > size_snap:
+                        bad_l_cut = torch.randint( 0, num_nodes, (size_cut,), dtype=torch.long, device=args.device)
+                        neg_dst = bad_l_cut[:size_snap]
+                    else:
+                        neg_dst = torch.randint( 0, num_nodes, (size_snap,), dtype=torch.long, device=args.device)
+                        bad_l_cut = neg_dst[:size_cut]
+               
+                    pos_hop , neg_hop = NAT_module.contrast_nat(src_l_cut, tgt_l_cut, bad_l_cut,cpu().numpy(), ts_l_cut, e_l_cut)
+                    pos_out = link_pred(h[pos_index[0]], h[pos_index[1]],pos_hop)
+                    neg_out = link_pred(h[pos_index[0]], h[neg_dst], neg_hop)
                     
                 loss = criterion(pos_out, torch.ones_like(pos_out))
                 loss += criterion(neg_out, torch.zeros_like(neg_out))
