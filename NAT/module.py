@@ -353,9 +353,9 @@ class NAT(torch.nn.Module):
       assert(bad_self_rep is not None)
       p_embed = torch.cat((p_embed, src_self_rep, tgt_self_rep), -1)
       n_embed = torch.cat((n_embed, src_self_rep, bad_self_rep), -1)
-    p_score = self.out_layer(p_embed).squeeze_(dim=-1)
-    n_score = self.out_layer(n_embed).squeeze_(dim=-1)
-    return p_score, n_score, attn_score
+    # p_score = self.out_layer(p_embed).squeeze_(dim=-1)
+    # n_score = self.out_layer(n_embed).squeeze_(dim=-1)
+    return p_embed, n_embed, attn_score
 
   def init_time_encoder(self):
     return TimeEncode(expand_dim=self.time_dim)
