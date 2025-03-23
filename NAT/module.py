@@ -69,7 +69,7 @@ class NAT(torch.nn.Module):
   def reset_store(self):
     ngh_stores = []
     for i in self.num_neighbors:
-      print("I", i)
+      # print("I", i)
       max_e_idx = self.total_nodes * i #how many nodes will be conected to this neighboor, total nodes is the highest node index
       raw_store = torch.zeros(max_e_idx, self.num_raw)
       hidden_store = torch.empty(max_e_idx, self.ngh_dim)
@@ -117,13 +117,19 @@ class NAT(torch.nn.Module):
     batch_size = len(src_l_cut)
     
     # Move data to the GPU
-    src_th = torch.from_numpy(src_l_cut).to(dtype=torch.long, device=self.device)
-    tgt_th = torch.from_numpy(tgt_l_cut).to(dtype=torch.long, device=self.device)
-    bad_th = torch.from_numpy(bad_l_cut).to(dtype=torch.long, device=self.device)
-    
+    # src_th = torch.from_numpy(src_l_cut).to(dtype=torch.long, device=self.device)
+    # tgt_th = torch.from_numpy(tgt_l_cut).to(dtype=torch.long, device=self.device)
+    # bad_th = torch.from_numpy(bad_l_cut).to(dtype=torch.long, device=self.device)
+    src_th = src_l_cut.to(dtype=torch.long, device=self.device)
+    tgt_th = tgt_l_cut.to(dtype=torch.long, device=self.device)
+    bad_th = bad_l_cut.to(dtype=torch.long, device=self.device)
+      
     idx_th = torch.cat((src_th, tgt_th, bad_th), 0)
-    cut_time_th = torch.from_numpy(cut_time_l).to(dtype=torch.float, device=self.device)
-    e_idx_th = torch.from_numpy(e_idx_l).to(dtype=torch.long, device=self.device)
+    # cut_time_th = torch.from_numpy(cut_time_l).to(dtype=torch.float, device=self.device)
+    # e_idx_th = torch.from_numpy(e_idx_l).to(dtype=torch.long, device=self.device)
+    cut_time_th = cut_time_l.to(dtype=torch.float, device=self.device)
+    e_idx_th = e_idx_l.to(dtype=torch.long, device=self.device)
+    
     end = time.time()
     batch_idx = torch.arange(batch_size * 3, device=self.device)
     start = time.time()
@@ -134,14 +140,14 @@ class NAT(torch.nn.Module):
     # sprase_idx is a tensor of batch idx repeated with ngh_n timesfor each node
    
     
-    h0_pos_bit = self.position_bits(3 * batch_size, hop=0)
-    updated_mem_h0 = self.batch_fetch_ncaches(idx_th, cut_time_th.repeat(3), hop=0)
-    updated_mem_h0_with_pos = torch.cat((updated_mem_h0, h0_pos_bit.unsqueeze(1)), -1)
+    h0_pos_bit = self.position_bits(3 * batch_size, hop=0) #torch of 1's size 3*bs*number of neighbors in hop 
+    updated_mem_h0 = self.batch_fetch_ncaches(idx_th, cut_time_th.repeat(3), hop=0) #updates the representation of current nodes from the last time by using edge encodings, time encodings (the first three), and past info (the last 4)
+    updated_mem_h0_with_pos = torch.cat((updated_mem_h0, h0_pos_bit.unsqueeze(1)), -1) #add the 1's 
     feature_dim = self.memory_dim + 1
     updated_mem = updated_mem_h0_with_pos.view(3 * batch_size, self.num_neighbors[0], -1)
     updated_mem_h1 = None
     if self.n_hops > 0:
-      h1_pos_bit = self.position_bits(3 * batch_size, hop=1)
+      h1_pos_bit = self.position_bits(3 * batch_size, hop=1) # #torch of 2's size 3*bs*number of neighbors in hop 
       updated_mem_h1 = self.batch_fetch_ncaches(idx_th, cut_time_th.repeat(3), hop=1)
       updated_mem_h1_with_pos = torch.cat((updated_mem_h1, h1_pos_bit.unsqueeze(1)), -1)
       updated_mem = torch.cat((
@@ -151,51 +157,81 @@ class NAT(torch.nn.Module):
       # second-hop N-cache access
       h2_pos_bit = self.position_bits(3 * batch_size, hop=2)
       updated_mem_h2 = torch.cat((self.batch_fetch_ncaches(idx_th, cut_time_th.repeat(3), hop=2), h2_pos_bit.unsqueeze(1)), -1)
-      updated_mem = torch.cat((updated_mem, updated_mem_h2.view(3 * batch_size, self.num_neighbors[2], -1)), 1)
+      updated_mem = torch.cat((updated_mem, updated_mem_h2.view(3 * batch_size, self.num_neighbors[2], -1)), 1)# including all data - from all hops. #batch*3, 49 (1+16+32), 8 (at the end the position 1,2,or 4)
 
+
+    # print("updated_mem", updated_mem.shape, updated_mem)
     updated_mem = updated_mem.view(-1, feature_dim)
+    # print("updated_mem after view", updated_mem.shape, updated_mem)
     ngh_id = updated_mem[:, self.ngh_id_idx].long()
-    ngh_exists = torch.nonzero(ngh_id, as_tuple=True)[0]
+    # print("ngh_id", ngh_id.shape, ngh_id)
+    ngh_exists = torch.nonzero(ngh_id, as_tuple=True)[0]#find the actual neogbors
+    # print("ngh_exists", ngh_exists.shape, ngh_exists)
     ngh_count = torch.count_nonzero(ngh_id.view(3, batch_size, -1), dim=-1)
-
+    # print("ngh_count", ngh_count.shape, ngh_count)
+      
     ngh_id = ngh_id.index_select(0, ngh_exists)
-    updated_mem = updated_mem.index_select(0, ngh_exists)
-    src_ngh_n_th, tgt_ngh_n_th, bad_ngh_n_th = ngh_count[0], ngh_count[1], ngh_count[2]
+    updated_mem = updated_mem.index_select(0, ngh_exists)#filter out the rows in ngh_id and updated_mem that correspond to actual neighbors. 
+    src_ngh_n_th, tgt_ngh_n_th, bad_ngh_n_th = ngh_count[0], ngh_count[1], ngh_count[2]# counts of neighbors for source, target, and bad target nodes are extracted and stored separately.
     ngh_n_th = torch.cat((src_ngh_n_th, tgt_ngh_n_th, bad_ngh_n_th), 0)
+    # print("ngh_n_th", ngh_n_th.shape, ngh_n_th)
     ori_idx = torch.repeat_interleave(idx_th, ngh_n_th)
-    sparse_idx = torch.repeat_interleave(batch_idx, ngh_n_th).long()
+    sparse_idx = torch.repeat_interleave(batch_idx, ngh_n_th).long()#hese lines repeat the indices idx_th and batch_idx according to the counts in ngh_n_th
     src_nghs = torch.sum(src_ngh_n_th)
     tgt_nghs = torch.sum(tgt_ngh_n_th)
-    bad_nghs = torch.sum(bad_ngh_n_th)
+    bad_nghs = torch.sum(bad_ngh_n_th)#These lines sum the counts of source, target, and bad target neighbors across all batches. 
+    # print("src_nghs", src_nghs)
+    # print("tgt_nghs", tgt_nghs)
+    # print("bad_nghs", bad_nghs)
 
-    node_features = self.node_raw_embed(ngh_id)
+    node_features = self.node_raw_embed(ngh_id) #all existing nodes features
 
-    pos_raw = updated_mem[:, -1]
-    src_pos_raw = pos_raw[0:src_nghs]
+    pos_raw = updated_mem[:, -1] #shows which hop is it
+    src_pos_raw = pos_raw[0:src_nghs] #takes only that corresponding to source nodes.
     # for the target nodes, shift all the bits by 3 to differentiate from the source nodes
-    # print("pos_raw", pos_raw)
+    # print("pos_raw", pos_raw.shape, pos_raw)
+    # print("src_pos_raw", src_pos_raw.shape, src_pos_raw)
     pos_raw = pos_raw.int()
     tgt_pos_raw = pos_raw[src_nghs:src_nghs + tgt_nghs] << 3
     bad_pos_raw = pos_raw[src_nghs + tgt_nghs:] << 3
     pos_raw = torch.cat((src_pos_raw, tgt_pos_raw, bad_pos_raw), -1)
-    hidden_states = torch.cat((node_features, updated_mem[:, self.ngh_rep_idx[0]:self.ngh_rep_idx[1]], pos_raw.unsqueeze(1)), -1)
+    hidden_states = torch.cat((node_features, updated_mem[:, self.ngh_rep_idx[0]:self.ngh_rep_idx[1]], pos_raw.unsqueeze(1)), -1) #all nodes features, last memory update and their position in hop
     
-    src_prev_f = hidden_states[0:src_nghs]
+    src_prev_f = hidden_states[0:src_nghs] #The hidden states and node IDs are segmented according to the counts of source, target, and bad nodes
     tgt_prev_f = hidden_states[src_nghs:src_nghs + tgt_nghs]
     bad_prev_f = hidden_states[src_nghs + tgt_nghs:]
-
+    # print("src_prev_f", src_prev_f.shape)
     src_ngh_id = ngh_id[0:src_nghs]
+    # print("src_ngh_id", src_ngh_id.shape)
+
     tgt_ngh_id = ngh_id[src_nghs:src_nghs + tgt_nghs]
-    bad_ngh_id = ngh_id[src_nghs + tgt_nghs:]
+    # print("tgt_ngh_id", tgt_ngh_id.shape)
+
+    bad_ngh_id = ngh_id[src_nghs + tgt_nghs:] #
+    # print("bad_ngh_id", bad_ngh_id.shape, bad_ngh_id)
+
     src_sparse_idx = sparse_idx[0:src_nghs]
+    # print("src_sparse_idx", src_sparse_idx.shape) #0,1,2,....number of source, can repeat numbers..
+
     src_n_sparse_idx = src_sparse_idx + batch_size
+    # print("src_n_sparse_idx", src_n_sparse_idx.shape, src_n_sparse_idx)#number of source...*2
+
     tgt_bad_sparse_idx = sparse_idx[src_nghs:] - batch_size
+    # print("tgt_bad_sparse_idx", tgt_bad_sparse_idx.shape, tgt_bad_sparse_idx)
+
     tgt_sparse_idx = sparse_idx[src_nghs:src_nghs + tgt_nghs] - batch_size
+    # print("tgt_sparse_idx", tgt_sparse_idx.shape)
+
     bad_sparse_idx = sparse_idx[src_nghs + tgt_nghs:] - batch_size
+    # print("bad_sparse_idx", bad_sparse_idx.shape, bad_sparse_idx)
+
     
     # joint features construction
     joint_p, ngh_and_batch_id_p = self.get_joint_feature(src_sparse_idx, tgt_sparse_idx, src_ngh_id, tgt_ngh_id, src_prev_f, tgt_prev_f)
     joint_n, ngh_and_batch_id_n = self.get_joint_feature(src_n_sparse_idx, bad_sparse_idx, src_ngh_id, bad_ngh_id, src_prev_f, bad_prev_f)
+    
+    # print("ngh_and_batch_id_p", ngh_and_batch_id_p)
+    # print("joint_p", joint_p.shape, joint_p)
     joint_p = self.get_position_encoding(joint_p)
     joint_n = self.get_position_encoding(joint_n)
  
@@ -212,10 +248,9 @@ class NAT(torch.nn.Module):
         
     p_score, n_score, attn_score = self.forward(ngh_and_batch_id_p, ngh_and_batch_id_n, features, batch_size, src_self_rep, tgt_self_rep, bad_self_rep)
 
-    if k < 2:
-        print("P score", p_score, p_score.shape, p_score.sigmoid())
-        print("n_score", n_score, n_score.shape, n_score.sigmoid())
-        print("attn_score", attn_score)
+    # if k < 2:
+    # print("P score", p_score.shape, p_score.sigmoid())
+    # print("n_score", n_score.shape, n_score.sigmoid())
     end = time.time()
     self.log_time('attention', start, end)
     
@@ -228,13 +263,17 @@ class NAT(torch.nn.Module):
 
     # N-cache update
     self.update_memory(src_th, tgt_th, e_idx_th, cut_time_th, updated_mem_h0, updated_mem_h1, batch_size)
-    return p_score.sigmoid(), n_score.sigmoid()
+    # return p_score.sigmoid(), n_score.sigmoid()
+    return p_score, n_score
   
   def get_position_encoding(self, joint):
     if self.pos_dim == 0:
       return joint[:, :-1]
     pos_raw = joint[:, -1]
     pos_encoding = self.trainable_embedding(pos_raw.long())
+    # print("pos_encoding", pos_encoding.shape)
+    # print("joint[:, :-1],", joint[:, :-1].shape)
+ 
     return torch.cat((joint[:, :-1], pos_encoding), -1)
     
 
@@ -247,7 +286,7 @@ class NAT(torch.nn.Module):
     ts_feat = self.time_encoder(ts_raw)
     prev_self_rep = self.self_rep[node_id]
     prev_oppo_rep = self.self_rep[oppo_id]
-    updated_self_rep = self.self_aggregator(self.self_rep_linear(torch.cat((prev_oppo_rep, e_feat, ts_feat), -1)), prev_self_rep)
+    updated_self_rep = self.self_aggregator(self.self_rep_linear(torch.cat((prev_oppo_rep, e_feat, ts_feat), -1)), prev_self_rep)#possibly a neural network module like an RNN or a GRU, then processes these integrated features along with the previous self-representation of the node to produce an updated representation. This step could be capturing complex interactions and dependencies among the features, facilitating learning from the temporal dynamics and neighborhood structure.
     return updated_self_rep
 
   def update_memory(self, src_th, tgt_th, e_idx_th, cut_time_th, updated_mem_h0, updated_mem_h1, batch_size):
@@ -302,11 +341,11 @@ class NAT(torch.nn.Module):
     n_id = torch.cat((src_n_id, tgt_n_id), 0)
     all_hidden = torch.cat((src_hidden, tgt_hidden), 0)
     feat_dim = src_hidden.shape[-1]
-    key = torch.cat((sparse_idx.unsqueeze(1), n_id.unsqueeze(1)), -1) # tuple of (idx in the current batch, n_id)
+    key = torch.cat((sparse_idx.unsqueeze(1), n_id.unsqueeze(1)), -1) # tuple of (idx in the current batch, n_id) Constructs a key by concatenating node IDs and their sparse indices. Each key uniquely identifies a node's occurrence within the batch.
     unique, inverse_idx = key.unique(return_inverse=True, dim=0)
     # SCATTER ADD FOR TS WITH INV IDX
     relative_ts = torch.zeros(unique.shape[0], feat_dim, device=self.device)
-    relative_ts.scatter_add_(0, inverse_idx.unsqueeze(1).repeat(1,feat_dim), all_hidden)
+    relative_ts.scatter_add_(0, inverse_idx.unsqueeze(1).repeat(1,feat_dim), all_hidden)#Performs a scatter_add_ operation, which adds values from all_hidden into relative_ts. The addition is indexed by inverse_idx, ensuring that features from the same key are summed together. This is a critical step in aggregating node features that may appear multiple times across different edges.
     relative_ts = relative_ts.index_select(0, inverse_idx)
     assert(relative_ts.shape[0] == sparse_idx.shape[0] == all_hidden.shape[0])
 
@@ -314,14 +353,17 @@ class NAT(torch.nn.Module):
 
   def get_joint_feature(self, src_sparse_idx, tgt_sparse_idx, src_n_id, tgt_n_id, src_hidden, tgt_hidden):
     sparse_idx = torch.cat((src_sparse_idx, tgt_sparse_idx), 0)
+    # print("sparse_idx", sparse_idx.shape)
     n_id = torch.cat((src_n_id, tgt_n_id), 0)
     all_hidden = torch.cat((src_hidden, tgt_hidden), 0)
     feat_dim = src_hidden.shape[-1]
+    # print("feat_dim", feat_dim)
     key = torch.cat((n_id.unsqueeze(1), sparse_idx.unsqueeze(1)), -1) # tuple of (idx in the current batch, n_id)
     unique, inverse_idx = key.unique(return_inverse=True, dim=0)
     # SCATTER ADD FOR TS WITH INV IDX
     relative_ts = torch.zeros(unique.shape[0], feat_dim, device=self.device)
     relative_ts.scatter_add_(0, inverse_idx.unsqueeze(1).repeat(1,feat_dim), all_hidden)
+    # print("relative_ts", relative_ts.shape)
     return relative_ts, unique
 
   def batch_fetch_ncaches(self, ori_idx, curr_time, hop):
@@ -355,6 +397,7 @@ class NAT(torch.nn.Module):
       n_embed = torch.cat((n_embed, src_self_rep, bad_self_rep), -1)
     # p_score = self.out_layer(p_embed).squeeze_(dim=-1)
     # n_score = self.out_layer(n_embed).squeeze_(dim=-1)
+
     return p_embed, n_embed, attn_score
 
   def init_time_encoder(self):
