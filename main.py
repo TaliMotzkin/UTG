@@ -70,6 +70,7 @@ class RecurrentGCN(torch.nn.Module):
         # edge_weight - represents the weight of each edge in the graph - (num_edges,)
         #h - (num_nodes, hidden_dim)
         #c - (num_nodes, hidden_dim)
+        # print("LSTM<",  x.shape, edge_index.shape, edge_weight.shape)
         h_0, c_0 = self.recurrent(x, edge_index, edge_weight, h, c)
         h = F.relu(h_0)
         h = self.linear(h)
@@ -96,7 +97,9 @@ class LinkPredictorWithHop(torch.nn.Module):
         # combined_x_j = torch.cat([x_j, target_hop], dim=1)
         
         x = x_i * x_j
-        x = x + hop
+        # print("X", x.shape)
+        # print("HOP", hop.shape)
+        x = torch.cat([x, hop], dim=1)
         
         for lin in self.lins[:-1]:
             x = lin(x)
@@ -156,7 +159,7 @@ def test_tgb(val_edges,interval, random_sampler, NAT_module, h,
 
     # print("ts_idx", ts_idx)
     # print("ts_list", ts_list)
-
+    k=0
     for batch in test_loader:
         pos_src, pos_dst, pos_t, pos_msg, pos_index = (
         batch.src,
@@ -187,6 +190,7 @@ def test_tgb(val_edges,interval, random_sampler, NAT_module, h,
         #^^a list of list; each internal list contains the set of negative edges that
                        # should be evaluated against each positive edge.
         for idx, neg_batch in enumerate(neg_batch_list):
+            neg_batch = neg_batch[:200]
             query_src = torch.full((1 + len(neg_batch),), pos_src[idx], device=args.device)
             query_dst = torch.tensor(
                         np.concatenate(
@@ -195,32 +199,66 @@ def test_tgb(val_edges,interval, random_sampler, NAT_module, h,
                         ),
                         device=args.device,
                     )
+        # size_batch = pos_t.shape[0]
+        # neg_batch = neg_batch_list[0]
+        # query_src_indices = torch.randint( 0, size_batch, (size_cut,), dtype=torch.long, device=args.device)
+
             # print("bb", len(neg_batch))
             # print("query_src", query_src, query_src.shape)
             with torch.no_grad():
                 NAT_module.nat.eval()
-                if getattr(args, "with_hop", 0) == 1 and idx ==0: #no need to calculate over the same batch again and again 
-                    size = len(pos_src)
-                    _, bad_l_cut = neg_batch[:size]
-                    pos_nat, bad_nat = NAT_module.contrast_nat(pos_src, pos_dst, bad_l_cut, pos_t, pos_index)
-                    y_pos = link_pred(h[query_src[0]], h[query_dst[0]], pos_nat)
-                    y_neg = link_pred(h[query_src[1:]], h[query_dst[1:]], bad_nat)
-                elif if getattr(args, "with_hop", 0) == 1:
-                    y_pos = link_pred(h[query_src[0]], h[query_dst[0]], pos_nat)
-                    y_neg = link_pred(h[query_src[1:]], h[query_dst[1:]], bad_nat)
+                if getattr(args, "with_hop", 0) == 1 and idx == 0: #no need to calculate over the same batch again and again 
+                    # size = len(pos_src)
+                    # bad_l_cut = neg_batch[:size]
+                    # bad_l_cut =torch.tensor(bad_l_cut)
+                    size_query = query_src.shape[0]
+                    
+                    time_snap = torch.full((size_query,), pos_t[idx], dtype=torch.long)
+                    idx_snap = torch.full((size_query,), pos_index[idx], dtype=torch.long)
+
+                    # print("sizes", h[query_src].shape, h[query_dst].shape, time_snap.shape, idx_snap.shape)
+                    pos_nat, _ = NAT_module.contrast_nat(query_src, query_dst, query_dst, time_snap, idx_snap)
+                    y_pred =link_pred(h[query_src], h[query_dst], pos_nat) 
+                    # cat_true = torch.cat([h[query_src[0]], h[query_dst[0]]], dim=0)
+                    # cat_min_true = cat_true.min()
+                    # cat_max_true = cat_true.max()
+                    # pos_nat = (pos_nat - cat_min_true) / (cat_max_true - cat_min_true)
+                    # y_pos = link_pred(h[query_src[0]], h[query_dst[0]], pos_nat)
+
+                    # cat_fake = torch.cat([h[query_src[1:]], h[query_dst[1:]]], dim=0)
+                    # cat_min_fake = cat_fake.min()
+                    # cat_max_fake = cat_fake.max()
+                    # bad_nat = (bad_nat - cat_min_fake) / (cat_max_fake - cat_min_fake)
+                    # y_neg = link_pred(h[query_src[1:]], h[query_dst[1:]], bad_nat)
+
+                    if k <2:
+                        print("pos_nat.mean(dim=0, keepdim=True)", pos_nat.mean(dim=0, keepdim=True).mean(), pos_nat.mean(dim=0, keepdim=True).std())
+                        # print("bad_nat.mean(dim=0, keepdim=True)", bad_nat.mean(dim=0, keepdim=True).mean(), bad_nat.mean(dim=0, keepdim=True).std())
+
+                elif getattr(args, "with_hop", 0) == 1:
+                    # y_pos = link_pred(h[query_src[0]], h[query_dst[0]], pos_nat)
+                    # y_neg = link_pred(h[query_src[1:]], h[query_dst[1:]], bad_nat)
+                    y_pred =link_pred(h[query_src], h[query_dst], pos_nat) 
                 else:
-                    y_pos = link_pred(h[query_src[0]], h[query_dst[0]])
-                    y_neg = link_pred(h[query_src[1:]], h[query_dst[1:]])
-            y_pos = y_pos.squeeze(dim=-1).detach()
-            y_neg = y_neg.squeeze(dim=-1).detach()
+                    # y_pos = link_pred(h[query_src[0]], h[query_dst[0]])
+                    # y_neg = link_pred(h[query_src[1:]], h[query_dst[1:]])
+                    y_pred =link_pred(h[query_src], h[query_dst]) 
+                    
+            # y_pos = y_pos.squeeze(dim=-1).detach()
+            # y_neg = y_neg.squeeze(dim=-1).detach()
+            y_pred = y_pred.squeeze(dim=-1).detach()
+
+            if k < 2:
+                print("y_pred", y_pred[0].mean(dim=0),idx)
+                print("y_neg", y_pred[1:].mean(dim=0))
 
             input_dict = {
-            "y_pred_pos": np.array(y_pos.cpu()]),
-            "y_pred_neg": np.array(y_neg.cpu()),
+            "y_pred_pos": np.array(y_pred[0].cpu()),
+            "y_pred_neg": np.array(y_pred[1:].cpu()),
             "eval_metric": [metric],
             }
             perf_list.append(evaluator.eval(input_dict)[metric])
-        
+            k +=1
 
         #* update the model now if the prediction batch has moved to next snapshot
         while (pos_t[-1] > ts_list[ts_idx] and ts_idx < max_ts_idx):
@@ -480,18 +518,25 @@ if __name__ == '__main__':
             model = RecurrentGCN(node_feat_dim=node_feat_dim, hidden_dim=hidden_dim, K=1).to(args.device)
         else:
             model = RecurrentGCN(node_feat_dim=node_feat_dim, hidden_dim=node_feat_dim+2*args.self_dim, K=1).to(args.device)
+            # model = RecurrentGCN(node_feat_dim=node_feat_dim, hidden_dim=node_feat_dim+args.ngh_dim+args.pos_dim, K=1).to(args.device)
         node_feat = torch.randn((num_nodes, node_feat_dim)).to(args.device)
 
         if args.with_hop == 0:
             link_pred = LinkPredictor(hidden_dim, hidden_dim, 1,
                                 2, 0.2).to(args.device)
         if args.with_hop == 1:
-            link_pred = LinkPredictorWithHop(in_channels=node_feat_dim+2*args.self_dim, 
+            link_pred = LinkPredictorWithHop(in_channels=2*(node_feat_dim+2*args.self_dim), 
                                  hop_dim=7, 
                                  hidden_channels=hidden_dim, 
                                  out_channels=1, 
                                  num_layers=2, 
                                  dropout=0.2).to(args.device)
+            # link_pred = LinkPredictorWithHop(in_channels=2*(node_feat_dim+args.ngh_dim+args.pos_dim), 
+            #                      hop_dim=7, 
+            #                      hidden_channels=hidden_dim, 
+            #                      out_channels=1, 
+            #                      num_layers=2, 
+            #                      dropout=0.2).to(args.device)
 
 
         optimizer = torch.optim.Adam(
@@ -519,6 +564,7 @@ if __name__ == '__main__':
             
             h_0, c_0, h = None, None, None
             total_loss = 0
+            k= 0
             for snapshot_idx in range(train_data['time_length']): #207
                 optimizer.zero_grad()
                 if (snapshot_idx == 0): #first snapshot, feed the current snapshot
@@ -564,7 +610,7 @@ if __name__ == '__main__':
                     prev_index = snapshot_list[snapshot_idx-1]
                     prev_index = prev_index.long().to(args.device)
                     if ('edge_attr' not in train_data):
-                        # edge_attr = torch.ones(prev_index.size(1), edge_feat_dim).to(args.device)
+                        edge_attr = torch.ones(prev_index.size(1), edge_feat_dim).to(args.device)
 
                         # if snapshot_idx-1 ==0:
                         #     shot_edge_mask = train_edges.t <= train_data['ts_map'][snapshot_idx-1]
@@ -612,12 +658,7 @@ if __name__ == '__main__':
                     #     break
 
                 pos_index = snapshot_list[snapshot_idx]
-                pos_index = pos_index.long().to(args.device)
-
-                neg_dst = torch.randint( 0, num_nodes, (pos_index.shape[1],), dtype=torch.long, device=args.device)#neg_dst tensor([190263, 191614, 200024, 197477, 136266, 349326,  80000, 289975],
-       # device='cuda:0') torch.Size([8]) ->> nodes indexes?
-
-                
+                pos_index = pos_index.long().to(args.device)               
                 
                 
 
@@ -634,17 +675,45 @@ if __name__ == '__main__':
                     tgt_l_cut = extracted_dst
                     size_snap = pos_index.shape[1]
                     size_cut = len(src_l_cut)
-                    if size_cut > size_snap:
-                        bad_l_cut = torch.randint( 0, num_nodes, (size_cut,), dtype=torch.long, device=args.device)
-                        neg_dst = bad_l_cut[:size_snap]
-                    else:
-                        neg_dst = torch.randint( 0, num_nodes, (size_snap,), dtype=torch.long, device=args.device)
-                        bad_l_cut = neg_dst[:size_cut]
-               
-                    pos_hop , neg_hop = NAT_module.contrast_nat(src_l_cut, tgt_l_cut, bad_l_cut,cpu().numpy(), ts_l_cut, e_l_cut)
+                    # if size_cut > size_snap:
+                    neg_dst = torch.randint( 0, num_nodes, (size_snap,), dtype=torch.long, device=args.device)
+                    indices = torch.randint( 0, size_snap, (size_cut,), dtype=torch.long, device=args.device)
+                    bad_l_cut = neg_dst[indices]
+                    
+                    # else:
+                    #     neg_dst = torch.randint( 0, num_nodes, (size_snap,), dtype=torch.long, device=args.device)
+                    #     bad_l_cut = neg_dst[:size_cut]
+                    time_snap = torch.full((size_snap,), snapshot_idx, dtype=torch.long)
+                    edge_snap = torch.arange(snapshot_idx, snapshot_idx + size_snap, dtype=torch.long)
+                    pos_hop , neg_hop = NAT_module.contrast_nat(pos_index[0], pos_index[1], neg_dst, time_snap, edge_snap)
+                    # print("H", h.shape)
+                    # print("neg_dst", neg_dst.shape, edge_snap.shape, time_snap.shape)
+                    # print("pos_hop", pos_hop.shape)
+                    # print("neg_hop", neg_hop.shape)
+                    # print("h[pos_index[0]]", h[pos_index[0]].shape)
+                    # print("h[pos_index[0]]", h[neg_dst].shape)
+
+                    # cat_true = torch.cat([h[pos_index[0]], h[pos_index[1]]], dim=0)
+                    # cat_min_true = cat_true.min()
+                    # cat_max_true = cat_true.max()
+                    # pos_hop = (pos_hop - cat_min_true) / (cat_max_true - cat_min_true)
+
+                    # cat_fake = torch.cat([h[pos_index[0]], h[neg_dst]], dim=0)
+                    # cat_min_fake = cat_fake.min()
+                    # cat_max_fake = cat_fake.max()
+                    # neg_hop = (neg_hop - cat_min_fake) / (cat_max_fake - cat_min_fake)
+
                     pos_out = link_pred(h[pos_index[0]], h[pos_index[1]],pos_hop)
                     neg_out = link_pred(h[pos_index[0]], h[neg_dst], neg_hop)
-                    
+
+                # if k <10:
+                #     print("pos_hop", pos_hop.mean(dim=0, keepdim=True).mean(), pos_hop.mean(dim=0, keepdim=True).std())
+                #     print("neg_hop", neg_hop.mean(dim=0, keepdim=True).mean(), neg_hop.mean(dim=0, keepdim=True).std())
+                # print("h[pos_index[0]]", h[pos_index[0]])
+                # print(" h[pos_index[1]]", h[pos_index[1]])
+
+                    # print("pos_out", pos_out.shape, pos_out.mean(dim=0), snapshot_idx)
+                    # print("neg_out", neg_out.shape, neg_out.mean(dim=0))
                 loss = criterion(pos_out, torch.ones_like(pos_out))
                 loss += criterion(neg_out, torch.zeros_like(neg_out))
 
@@ -656,35 +725,108 @@ if __name__ == '__main__':
 
                 h_0 = h_0.detach()
                 c_0 = c_0.detach()
+                k +=1
 
             train_time = timeit.default_timer() - train_start_time
             print (f'Epoch {epoch}/{num_epochs}, Loss: {total_loss}')
             print ("Train time: ", train_time)
-            
+
+
             #? Evaluation starts here
-            val_snapshots = data['val_data']['edge_index']
-            ts_list = data['val_data']['ts_map']
-            val_loader = IndexedTemporalDataLoader(val_edges, batch_size=batch_size)
+    #         val_snapshots = data['val_data']['edge_index']
+    #         ts_list = data['val_data']['ts_map']
+    #         val_loader = IndexedTemporalDataLoader(val_edges, batch_size=batch_size)
+    #         evaluator = Evaluator(name=args.dataset)
+    #         neg_sampler = dataset.negative_sampler
+    #         dataset.load_val_ns()
+
+    #         start_epoch_val = timeit.default_timer()
+    #         val_metrics, h, h_0, c_0 = test_tgb(full_data, interval,random_sampler_val, NAT_module, h, h_0, c_0, val_loader, val_snapshots, ts_list,
+    #             node_feat,model, link_pred,neg_sampler,evaluator,metric, split_mode='val')
+    #         val_time = timeit.default_timer() - start_epoch_val
+    #         print(f"Val {metric}: {val_metrics}")
+    #         print ("Val time: ", val_time)
+    #         if (args.wandb):
+    #             wandb.log({"train_loss":(total_loss),
+    #                     "val_" + metric: val_metrics,
+    #                     "train time": train_time,
+    #                     # "val time": val_time,
+    #                     })
+    #         writer.add_scalar("Loss/train", total_loss, epoch)
+    #         writer.add_scalar("MRR/val", val_metrics, epoch)
+    #         #! report test results when validation improves
+    #         if (val_metrics > best_val):
+    #             dataset.load_test_ns()
+    #             test_snapshots = data['test_data']['edge_index']
+    #             ts_list = data['test_data']['ts_map']
+    #             test_loader = IndexedTemporalDataLoader(test_edges, batch_size=batch_size)
+    #             neg_sampler = dataset.negative_sampler
+    #             dataset.load_test_ns()
+
+    #             test_start_time = timeit.default_timer()
+    #             test_metrics, h, h_0, c_0 = test_tgb(full_data, interval,random_sampler_test, NAT_module,h, h_0, c_0, test_loader, test_snapshots, ts_list,
+    #             node_feat,model, link_pred,neg_sampler,evaluator,metric, split_mode='test')
+    #             test_time = timeit.default_timer() - test_start_time
+    #             best_val = val_metrics
+    #             best_test = test_metrics
+
+    #             writer.add_scalar("MRR/test", test_metrics, epoch)
+
+    #             print ("test metric is ", test_metrics)
+    #             print ("test elapsed time is ", test_time)
+    #             print ("--------------------------------")
+    #             if ((epoch - best_epoch) >= args.patience and epoch > 1):
+    #                 best_epoch = epoch
+    #                 break
+    #             best_epoch = epoch
+    #     print ("run finishes")
+    #     print ("best epoch is, ", best_epoch)
+    #     print ("best val performance is, ", best_val)
+    #     print ("best test performance is, ", best_test)
+    #     print ("------------------------------------------")
+
+    #     runs_best_val.append(best_val)
+    #     runs_best_test.append(best_test)
+    # runs_best_val = np.array(runs_best_val)
+    # runs_best_test = np.array(runs_best_test)
+    
+    # val_mean, val_std = runs_best_val.mean(), runs_best_val.std(ddof=1)
+    # test_mean, test_std = runs_best_test.mean(), runs_best_test.std(ddof=1)
+    
+    # print("========================================")
+    # print(f"Summary of {args.num_runs} runs:")
+    # print(f"Val MRR: mean={val_mean:.4f} ± {val_std:.4f}")
+    # print(f"Test MRR: mean={test_mean:.4f} ± {test_std:.4f}")
+    # print("========================================")
+    
+    # writer.close()
+    
+################################# non val @############################
+            #? Evaluation starts here
+            # val_snapshots = data['val_data']['edge_index']
+            # ts_list = data['val_data']['ts_map']
+            # val_loader = IndexedTemporalDataLoader(val_edges, batch_size=batch_size)
             evaluator = Evaluator(name=args.dataset)
             neg_sampler = dataset.negative_sampler
-            dataset.load_val_ns()
+            # dataset.load_val_ns()
 
-            start_epoch_val = timeit.default_timer()
-            val_metrics, h, h_0, c_0 = test_tgb(full_data, interval,random_sampler_val, NAT_module, h, h_0, c_0, val_loader, val_snapshots, ts_list,
-                node_feat,model, link_pred,neg_sampler,evaluator,metric, split_mode='val')
-            val_time = timeit.default_timer() - start_epoch_val
-            print(f"Val {metric}: {val_metrics}")
-            print ("Val time: ", val_time)
+            # start_epoch_val = timeit.default_timer()
+            # val_metrics, h, h_0, c_0 = test_tgb(full_data, interval,random_sampler_val, NAT_module, h, h_0, c_0, val_loader, val_snapshots, ts_list,
+                # node_feat,model, link_pred,neg_sampler,evaluator,metric, split_mode='val')
+            # val_time = timeit.default_timer() - start_epoch_val
+            # print(f"Val {metric}: {val_metrics}")
+            # print ("Val time: ", val_time)
             if (args.wandb):
                 wandb.log({"train_loss":(total_loss),
                         "val_" + metric: val_metrics,
                         "train time": train_time,
-                        "val time": val_time,
+                        # "val time": val_time,
                         })
             writer.add_scalar("Loss/train", total_loss, epoch)
-            writer.add_scalar("MRR/val", val_metrics, epoch)
+            # writer.add_scalar("MRR/val", val_metrics, epoch)
             #! report test results when validation improves
-            if (val_metrics > best_val):
+            # if (val_metrics > best_val):
+            if epoch % 7 == 0:
                 dataset.load_test_ns()
                 test_snapshots = data['test_data']['edge_index']
                 ts_list = data['test_data']['ts_map']
@@ -696,7 +838,7 @@ if __name__ == '__main__':
                 test_metrics, h, h_0, c_0 = test_tgb(full_data, interval,random_sampler_test, NAT_module,h, h_0, c_0, test_loader, test_snapshots, ts_list,
                 node_feat,model, link_pred,neg_sampler,evaluator,metric, split_mode='test')
                 test_time = timeit.default_timer() - test_start_time
-                best_val = val_metrics
+                # best_val = val_metrics
                 best_test = test_metrics
 
                 writer.add_scalar("MRR/test", test_metrics, epoch)
@@ -710,21 +852,21 @@ if __name__ == '__main__':
                 best_epoch = epoch
         print ("run finishes")
         print ("best epoch is, ", best_epoch)
-        print ("best val performance is, ", best_val)
+        # print ("best val performance is, ", best_val)
         print ("best test performance is, ", best_test)
         print ("------------------------------------------")
 
-        runs_best_val.append(best_val)
+        # runs_best_val.append(best_val)
         runs_best_test.append(best_test)
-    runs_best_val = np.array(runs_best_val)
+    # runs_best_val = np.array(runs_best_val)
     runs_best_test = np.array(runs_best_test)
     
-    val_mean, val_std = runs_best_val.mean(), runs_best_val.std(ddof=1)
+    # val_mean, val_std = runs_best_val.mean(), runs_best_val.std(ddof=1)
     test_mean, test_std = runs_best_test.mean(), runs_best_test.std(ddof=1)
     
     print("========================================")
     print(f"Summary of {args.num_runs} runs:")
-    print(f"Val MRR: mean={val_mean:.4f} ± {val_std:.4f}")
+    # print(f"Val MRR: mean={val_mean:.4f} ± {val_std:.4f}")
     print(f"Test MRR: mean={test_mean:.4f} ± {test_std:.4f}")
     print("========================================")
     
