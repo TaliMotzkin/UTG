@@ -92,7 +92,7 @@ class init_nat_module():
     def contrast_nat(self, src_l_cut, tgt_l_cut, bad_l_cut, ts_l_cut, e_l_cut):
 
         pos_prob, neg_prob = self.nat.contrast(src_l_cut, tgt_l_cut, bad_l_cut, ts_l_cut, e_l_cut)
-
+        return pos_prob, neg_prob 
 
         
         # print("NAT tali", len(nat.get_neighborhood_store()), nat.get_neighborhood_store()[0][0], nat.get_neighborhood_store()[1][0:32], nat.get_neighborhood_store()[2][3]) 
