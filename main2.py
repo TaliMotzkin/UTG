@@ -82,40 +82,34 @@ class LinkPredictorWithHop(torch.nn.Module):
         self.input_dim = in_channels
         
         self.lins = torch.nn.ModuleList()
-        self.lins.append(torch.nn.Linear(self.input_dim, hidden_channels))
+        self.lins.append(torch.nn.Linear(2*self.input_dim, hidden_channels))
         for _ in range(num_layers - 2):
             self.lins.append(torch.nn.Linear(hidden_channels, hidden_channels))
-        self.lins.append(torch.nn.Linear(hidden_channels*2, out_channels))
+        self.lins.append(torch.nn.Linear(hidden_channels, out_channels))
         self.dropout = dropout
-        self.hop_linear = torch.nn.Linear(in_channels, hidden_channels)
-
 
     def reset_parameters(self):
         for lin in self.lins:
             lin.reset_parameters()
 
     def forward(self, x_i, x_j, hop):
-        # combined_x_i = torch.cat([x_i, source_hop], dim=1)
-        # combined_x_j = torch.cat([x_j, target_hop], dim=1)
+        # print("x_j", x_j.shape)
+        # print("hop_i", hop_i.shape, hop_i.mean(dim =0, keepdim = True).shape)
+        # combined_x_i = torch.cat([x_i, hop_i, dim=1)
+        # combined_x_j = torch.cat([x_j, hop_j[:x_i.shape[0]]], dim=1)
         
-        x = x_i * x_j
+        # x = combined_x_i * combined_x_j
+        # hop = hop_i *hop_j
+        x= x_i*x_j
         # print("X", x.shape)
         # print("HOP", hop.shape)
-
-        x = torch.cat([x, hop], dim=1)
-
-        hop = self.hop_linear(hop)
-        hop = F.relu(hop)
-
+        x =torch.cat([x, hop], dim=1)
+        # x + hop.mean(dim = 0, keepdim= True)
         
         for lin in self.lins[:-1]:
             x = lin(x)
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
-        # print("X", x.shape)
-        # print("hop", hop.shape)
-        # x = torch.cat([x, hop.unsqueeze(-1)], dim=1)
-        x = torch.cat([x, hop], dim=1)
         x = self.lins[-1](x)
         return torch.sigmoid(x)
         
@@ -145,8 +139,25 @@ class LinkPredictor(torch.nn.Module):
         x = self.lins[-1](x)
         return torch.sigmoid(x) #probability between 0 and 1, indicating the likelihood that an edge exists.
 
+def padding_seq(pos_out, size_snap,max_neighbors = 256):
+    
+    padded_neighbors = torch.full((size_snap, max_neighbors), -1, dtype=torch.long, device=pos_out.device)
+    
+    for node_pos in range(size_snap):
+        indices = pos_out[pos_out[:, 1] == node_pos][:, 0]
+        
+        # if there are more indices than max_neighbors, truncate
+        if len(indices) > max_neighbors:
+            indices = indices[:max_neighbors]
+        
+        # placein the corresponding row of the padded tensor
+        padded_neighbors[node_pos, :len(indices)] = indices
 
+    mask = padded_neighbors != -1
+    padded_neighbors[padded_neighbors == -1] = 0
 
+    return padded_neighbors, mask
+    
 def test_tgb(val_edges,interval, random_sampler, NAT_module, h,
              h_0,
              c_0, 
@@ -201,9 +212,7 @@ def test_tgb(val_edges,interval, random_sampler, NAT_module, h,
         #^^a list of list; each internal list contains the set of negative edges that
                        # should be evaluated against each positive edge.
         for idx, neg_batch in enumerate(neg_batch_list):
-
-            neg_batch = neg_batch[:995]
-
+            # neg_batch = neg_batch[:200]
             query_src = torch.full((1 + len(neg_batch),), pos_src[idx], device=args.device)
             query_dst = torch.tensor(
                         np.concatenate(
@@ -220,25 +229,33 @@ def test_tgb(val_edges,interval, random_sampler, NAT_module, h,
             # print("query_src", query_src, query_src.shape)
             with torch.no_grad():
                 NAT_module.nat.eval()
-
-                if getattr(args, "with_hop", 0) == 1 and idx ==0: #no need to calculate over the same batch again and again 
+                if getattr(args, "with_hop", 0) == 1: #no need to calculate over the same batch again and again 
                     # size = len(pos_src)
                     # bad_l_cut = neg_batch[:size]
                     # bad_l_cut =torch.tensor(bad_l_cut)
                     size_query = query_src.shape[0]
-
+                    
                     time_snap = torch.full((size_query,), pos_t[idx], dtype=torch.long)
                     idx_snap = torch.full((size_query,), pos_index[idx], dtype=torch.long)
 
-
-                    pos_nat, pos_nat2 = NAT_module.contrast_nat(query_src, query_dst, query_dst, time_snap, idx_snap, test=True)
+                    # print("sizes", h[query_src].shape, h[query_dst].shape, time_snap.shape, idx_snap.shape)
+                    pos_nat, _ = NAT_module.contrast_nat(query_src, query_dst, query_dst, time_snap, idx_snap, test=True)
                     
-                    # cat_true = torch.cat([h[query_src], h[query_dst]], dim=0)
+                    pad_pos_hop, mask_pos_hop = padding_seq(pos_hop,size_query) 
+                    gathered_h_pos = h[pad_pos_hop]
+                    gathered_h_pos[~mask_pos_hop] = 0
+                    summed_h_pos = gathered_h_pos.sum(dim=1)  
+                    valid_counts_pos = mask_pos_hop.sum(dim=1, keepdim=True) 
+                    averaged_h_pos = summed_h_pos / valid_counts_pos.clamp(min=1)
+
+        
+                    
+                    y_pred =link_pred(h[query_src], h[query_dst], averaged_h_pos) 
+                    # cat_true = torch.cat([h[query_src[0]], h[query_dst[0]]], dim=0)
                     # cat_min_true = cat_true.min()
                     # cat_max_true = cat_true.max()
                     # pos_nat = (pos_nat - cat_min_true) / (cat_max_true - cat_min_true)
-                    y_pred =link_pred(h[query_src], h[query_dst], pos_nat) 
-
+                    # y_pos = link_pred(h[query_src[0]], h[query_dst[0]], pos_nat)
 
                     # cat_fake = torch.cat([h[query_src[1:]], h[query_dst[1:]]], dim=0)
                     # cat_min_fake = cat_fake.min()
@@ -246,25 +263,14 @@ def test_tgb(val_edges,interval, random_sampler, NAT_module, h,
                     # bad_nat = (bad_nat - cat_min_fake) / (cat_max_fake - cat_min_fake)
                     # y_neg = link_pred(h[query_src[1:]], h[query_dst[1:]], bad_nat)
 
-                    if k <2:
-                        print("pos_nat.mean(dim=0, keepdim=True)", pos_nat.mean(dim=0, keepdim=True).mean(), pos_nat.mean(dim=0, keepdim=True).std())
+                    # if k <2:
+                        # print("pos_nat.mean(dim=0, keepdim=True)", pos_nat.mean(dim=0, keepdim=True).mean(), pos_nat.mean(dim=0, keepdim=True).std())
+                        # print("bad_nat.mean(dim=0, keepdim=True)", bad_nat.mean(dim=0, keepdim=True).mean(), bad_nat.mean(dim=0, keepdim=True).std())
 
-                    
-                elif getattr(args, "with_hop", 0) == 1:
-                    # print("query_src.shape[0]", query_src.shape[0])
-                    # if query_src.shape[0] != prev_size:
-                    #     prev_size = query_src.shape[0]
-                    #     # print("making 999", query_src.shape[0], "index", idx )
-                    #     size_query = query_src.shape[0]
-                    #     time_snap = torch.full((size_query,), pos_t[idx], dtype=torch.long)
-                    #     idx_snap = torch.full((size_query,), pos_index[idx], dtype=torch.long)
-                    #     pos_nat, _ = NAT_module.contrast_nat(query_src, query_dst, query_dst, time_snap, idx_snap)
-                        # print("pos_nat", pos_nat.shape)
-                        # print("h[query_src]", h[query_src].shape, h[query_dst].shape)
-                    # y_pos = link_pred(h[query_src[0]], h[query_dst[0]], pos_nat)
-                    # y_neg = link_pred(h[query_src[1:]], h[query_dst[1:]], bad_nat)
-                    y_pred =link_pred(h[query_src], h[query_dst], pos_nat) 
-
+                # elif getattr(args, "with_hop", 0) == 1:
+                #     # y_pos = link_pred(h[query_src[0]], h[query_dst[0]], pos_nat)
+                #     # y_neg = link_pred(h[query_src[1:]], h[query_dst[1:]], bad_nat)
+                #     y_pred =link_pred(h[query_src], h[query_dst] , h[pos_nat[0]], h[pos_nat[1]]) 
                 else:
                     # y_pos = link_pred(h[query_src[0]], h[query_dst[0]])
                     # y_neg = link_pred(h[query_src[1:]], h[query_dst[1:]])
@@ -274,11 +280,9 @@ def test_tgb(val_edges,interval, random_sampler, NAT_module, h,
             # y_neg = y_neg.squeeze(dim=-1).detach()
             y_pred = y_pred.squeeze(dim=-1).detach()
 
-
             if k < 2:
                 print("y_pred", y_pred[0].mean(dim=0),idx)
                 print("y_neg", y_pred[1:].mean(dim=0))
-
 
             input_dict = {
             "y_pred_pos": np.array(y_pred[0].cpu()),
@@ -530,8 +534,7 @@ if __name__ == '__main__':
     random_sampler_train = RandEdgeSampler((train_edges.src.cpu().numpy(), ), (train_edges.dst.cpu().numpy(), ))
     random_sampler_test = RandEdgeSampler((test_edges.src.cpu().numpy(), ), (test_edges.dst.cpu().numpy(), ))
     random_sampler_val = RandEdgeSampler((val_edges.src.cpu().numpy(), ), (val_edges.dst.cpu().numpy(), ))
-    print(NAT_module.logger)
-    NAT_module.logger.info(f"learning_rate {args.lr} \n, architecture gclstm \n dataset {args.dataset} \n time granularity  {args.time_scale}\n")
+    
 
     num_epochs = args.max_epoch
     lr = args.lr
@@ -546,21 +549,21 @@ if __name__ == '__main__':
         if args.with_hop == 0:
             model = RecurrentGCN(node_feat_dim=node_feat_dim, hidden_dim=hidden_dim, K=1).to(args.device)
         else:
-            model = RecurrentGCN(node_feat_dim=node_feat_dim, hidden_dim=node_feat_dim+2*args.self_dim, K=1).to(args.device)
-            # model = RecurrentGCN(node_feat_dim=node_feat_dim, hidden_dim=node_feat_dim+args.ngh_dim+args.pos_dim, K=1).to(args.device)
+            model = RecurrentGCN(node_feat_dim=node_feat_dim, hidden_dim=hidden_dim, K=1).to(args.device)
+            # model = RecurrentGCN(node_feat_dim=node_feat_dim, hidden_dim=node_feat_dim+2*args.self_dim, K=1).to(args.device)
         node_feat = torch.randn((num_nodes, node_feat_dim)).to(args.device)
 
         if args.with_hop == 0:
             link_pred = LinkPredictor(hidden_dim, hidden_dim, 1,
                                 2, 0.2).to(args.device)
         if args.with_hop == 1:
-            link_pred = LinkPredictorWithHop(in_channels=2*(node_feat_dim+2*args.self_dim), 
+            link_pred = LinkPredictorWithHop(in_channels=hidden_dim, 
                                  hop_dim=7, 
                                  hidden_channels=hidden_dim, 
                                  out_channels=1, 
                                  num_layers=2, 
                                  dropout=0.2).to(args.device)
-            # link_pred = LinkPredictorWithHop(in_channels=2*(node_feat_dim+args.ngh_dim+args.pos_dim), 
+            # link_pred = LinkPredictorWithHop(in_channels=node_feat_dim+2*args.self_dim, 
             #                      hop_dim=7, 
             #                      hidden_channels=hidden_dim, 
             #                      out_channels=1, 
@@ -699,12 +702,12 @@ if __name__ == '__main__':
                     pos_out = link_pred(h[pos_index[0]], h[pos_index[1]]) #source nodes to target nodes data from h - probability of future pos_index torch.Size([8, 1])
                     neg_out = link_pred(h[pos_index[0]], h[neg_dst])# from target to some random...torch.Size([8, 1])
                 if args.with_hop ==1:
+                    # print("pos_index[0]",pos_index[0],pos_index[0].shape)
                     e_l_cut = shot_edge_idx + 1
                     ts_l_cut = shot_edge_times
                     src_l_cut = extracted_src
                     tgt_l_cut = extracted_dst
                     size_snap = pos_index.shape[1]
-            
                     size_cut = len(src_l_cut)
                     # if size_cut > size_snap:
                     neg_dst = torch.randint( 0, num_nodes, (size_snap,), dtype=torch.long, device=args.device)
@@ -714,41 +717,35 @@ if __name__ == '__main__':
                     # else:
                     #     neg_dst = torch.randint( 0, num_nodes, (size_snap,), dtype=torch.long, device=args.device)
                     #     bad_l_cut = neg_dst[:size_cut]
-
                     time_snap = torch.full((size_snap,), timestep_list[snapshot_idx], dtype=torch.long)
-
                     edge_snap = torch.arange(snapshot_idx, snapshot_idx + size_snap, dtype=torch.long)
                     pos_hop , neg_hop = NAT_module.contrast_nat(pos_index[0], pos_index[1], neg_dst, time_snap, edge_snap)
-                    # print("H", h.shape)
-                    # print("neg_dst", neg_dst.shape, edge_snap.shape, time_snap.shape)
-                    # print("pos_hop", pos_hop.shape)
-                    # print("neg_hop", neg_hop.shape)
-                    # print("h[pos_index[0]]", h[pos_index[0]].shape)
-                    # print("h[pos_index[0]]", h[neg_dst].shape)
+                
+                    pad_pos_hop, mask_pos_hop = padding_seq(pos_hop, size_snap) 
+                    gathered_h_pos = h[pad_pos_hop]
+                    gathered_h_pos[~mask_pos_hop] = 0
+                    summed_h_pos = gathered_h_pos.sum(dim=1)  
+                    valid_counts_pos = mask_pos_hop.sum(dim=1, keepdim=True) 
+                    averaged_h_pos = summed_h_pos / valid_counts_pos.clamp(min=1)
 
-                    # cat_true = torch.cat([h[pos_index[0]], h[pos_index[1]]], dim=0)
-                    # cat_min_true = cat_true.min()
-                    # cat_max_true = cat_true.max()
-                    # pos_hop = (pos_hop - cat_min_true) / (cat_max_true - cat_min_true)
-
-                    # cat_fake = torch.cat([h[pos_index[0]], h[neg_dst]], dim=0)
-                    # cat_min_fake = cat_fake.min()
-                    # cat_max_fake = cat_fake.max()
-                    # neg_hop = (neg_hop - cat_min_fake) / (cat_max_fake - cat_min_fake)
-
-                    pos_out = link_pred(h[pos_index[0]], h[pos_index[1]],pos_hop)
-                    neg_out = link_pred(h[pos_index[0]], h[neg_dst], neg_hop)
-
+                    pad_neg_hop, mask_neg_hop = padding_seq(neg_hop, size_snap) 
+                    gathered_h_neg = h[pad_neg_hop]
+                    gathered_h_neg[~mask_neg_hop] = 0
+                    summed_h_neg = gathered_h_neg.sum(dim=1)  
+                    valid_counts_neg = mask_neg_hop.sum(dim=1, keepdim=True) 
+                    averaged_h_neg = summed_h_neg / valid_counts_neg.clamp(min=1)
+                    
+                    pos_out = link_pred(h[pos_index[0]], h[pos_index[1]], averaged_h_pos)
+                    neg_out = link_pred(h[pos_index[0]], h[neg_dst], averaged_h_neg)
 
                 # if k <10:
+                #     # print("pos_hop", pos_hop.mean(dim=0, keepdim=True).mean(), pos_hop.mean(dim=0, keepdim=True).std())
+                #     # print("neg_hop", neg_hop.mean(dim=0, keepdim=True).mean(), neg_hop.mean(dim=0, keepdim=True).std())
+                # # print("h[pos_index[0]]", h[pos_index[0]])
+                # # print(" h[pos_index[1]]", h[pos_index[1]])
 
-                #     print("pos_hop", pos_hop.mean(dim=0, keepdim=True).mean(), pos_hop.mean(dim=0, keepdim=True).std())
-                #     print("neg_hop", neg_hop.mean(dim=0, keepdim=True).mean(), neg_hop.mean(dim=0, keepdim=True).std())
-                # print("h[pos_index[0]]", h[pos_index[0]])
-                # print(" h[pos_index[1]]", h[pos_index[1]])
-
-                    # print("pos_out", pos_out.shape, pos_out.mean(dim=0), snapshot_idx)
-                    # print("neg_out", neg_out.shape, neg_out.mean(dim=0))
+                #     print("pos_out", pos_out.shape, pos_out.mean(dim=0), snapshot_idx)
+                #     print("neg_out", neg_out.shape, neg_out.mean(dim=0))
                 loss = criterion(pos_out, torch.ones_like(pos_out))
                 loss += criterion(neg_out, torch.zeros_like(neg_out))
 
@@ -781,16 +778,11 @@ if __name__ == '__main__':
     #         val_time = timeit.default_timer() - start_epoch_val
     #         print(f"Val {metric}: {val_metrics}")
     #         print ("Val time: ", val_time)
-
-    #         NAT_module.logger.info(f"train_loss: {total_loss} \n, metric: {val_metrics}\n  train time: {train_time} \n val time: {val_time} \n ")
-
     #         if (args.wandb):
     #             wandb.log({"train_loss":(total_loss),
     #                     "val_" + metric: val_metrics,
     #                     "train time": train_time,
-
     #                     # "val time": val_time,
-
     #                     })
     #         writer.add_scalar("Loss/train", total_loss, epoch)
     #         writer.add_scalar("MRR/val", val_metrics, epoch)
@@ -819,14 +811,6 @@ if __name__ == '__main__':
     #                 best_epoch = epoch
     #                 break
     #             best_epoch = epoch
-
-    #             NAT_module.logger.info(f"best epoch {best_epoch} \n, test_metrics {test_metrics} \n, test_time {test_time}\n")
-    #             if (args.wandb):
-    #                 wandb.log({"best epoch":(best_epoch),
-    #                         "test_metrics": test_metrics,
-    #                          "test_time": test_time,
-    #                         })
-
     #     print ("run finishes")
     #     print ("best epoch is, ", best_epoch)
     #     print ("best val performance is, ", best_val)
@@ -871,11 +855,10 @@ if __name__ == '__main__':
                         # "val time": val_time,
                         })
             writer.add_scalar("Loss/train", total_loss, epoch)
-
-            # writer.addReport_scalar("MRR/val", val_metrics, epoch)
+            # writer.add_scalar("MRR/val", val_metrics, epoch)
             #! report test results when validation improves
             # if (val_metrics > best_val):
-            if epoch % 50 == 0 :
+            if epoch % 50 == 0:
                 dataset.load_test_ns()
                 test_snapshots = data['test_data']['edge_index']
                 ts_list = data['test_data']['ts_map']
@@ -895,9 +878,9 @@ if __name__ == '__main__':
                 print ("test metric is ", test_metrics)
                 print ("test elapsed time is ", test_time)
                 print ("--------------------------------")
-                # if ((epoch - best_epoch) >= args.patience and epoch > 1):
-                #     best_epoch = epoch
-                #     break
+                if ((epoch - best_epoch) >= args.patience and epoch > 1):
+                    best_epoch = epoch
+                    break
                 best_epoch = epoch
         print ("run finishes")
         print ("best epoch is, ", best_epoch)

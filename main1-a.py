@@ -85,9 +85,10 @@ class LinkPredictorWithHop(torch.nn.Module):
         self.lins.append(torch.nn.Linear(self.input_dim, hidden_channels))
         for _ in range(num_layers - 2):
             self.lins.append(torch.nn.Linear(hidden_channels, hidden_channels))
-        self.lins.append(torch.nn.Linear(hidden_channels*2, out_channels))
+        self.lins.append(torch.nn.Linear(hidden_channels+1, out_channels))
         self.dropout = dropout
-        self.hop_linear = torch.nn.Linear(in_channels, hidden_channels)
+        self.hop_linear1 = torch.nn.Linear(in_channels, hidden_channels)
+        self.hop_linear2 = torch.nn.Linear(hidden_channels, 1)
 
 
     def reset_parameters(self):
@@ -101,12 +102,10 @@ class LinkPredictorWithHop(torch.nn.Module):
         x = x_i * x_j
         # print("X", x.shape)
         # print("HOP", hop.shape)
-
-        x = torch.cat([x, hop], dim=1)
-
-        hop = self.hop_linear(hop)
+        hop = self.hop_linear1(hop)
         hop = F.relu(hop)
-
+        hop = self.hop_linear2(hop)
+        # x = torch.cat([x, hop], dim=1)
         
         for lin in self.lins[:-1]:
             x = lin(x)
@@ -201,9 +200,7 @@ def test_tgb(val_edges,interval, random_sampler, NAT_module, h,
         #^^a list of list; each internal list contains the set of negative edges that
                        # should be evaluated against each positive edge.
         for idx, neg_batch in enumerate(neg_batch_list):
-
-            neg_batch = neg_batch[:995]
-
+            # neg_batch = neg_batch[:995]
             query_src = torch.full((1 + len(neg_batch),), pos_src[idx], device=args.device)
             query_dst = torch.tensor(
                         np.concatenate(
@@ -219,52 +216,54 @@ def test_tgb(val_edges,interval, random_sampler, NAT_module, h,
             # print("bb", len(neg_batch))
             # print("query_src", query_src, query_src.shape)
             with torch.no_grad():
-                NAT_module.nat.eval()
-
-                if getattr(args, "with_hop", 0) == 1 and idx ==0: #no need to calculate over the same batch again and again 
+                NAT_module.eval()
+                if getattr(args, "with_hop", 0) == 1: #no need to calculate over the same batch again and again 
                     # size = len(pos_src)
                     # bad_l_cut = neg_batch[:size]
                     # bad_l_cut =torch.tensor(bad_l_cut)
                     size_query = query_src.shape[0]
-
+                    prev_size = size_query
                     time_snap = torch.full((size_query,), pos_t[idx], dtype=torch.long)
                     idx_snap = torch.full((size_query,), pos_index[idx], dtype=torch.long)
 
-
-                    pos_nat, pos_nat2 = NAT_module.contrast_nat(query_src, query_dst, query_dst, time_snap, idx_snap, test=True)
+                    # print("sizes", query_src[0], query_dst[0], query_dst[0], time_snap[0], idx_snap[0])
+                    pos_nat, _ = NAT_module.nat.contrast_nat(query_src, query_dst, query_dst, time_snap, idx_snap, test=True)
+                    
                     
                     # cat_true = torch.cat([h[query_src], h[query_dst]], dim=0)
                     # cat_min_true = cat_true.min()
                     # cat_max_true = cat_true.max()
                     # pos_nat = (pos_nat - cat_min_true) / (cat_max_true - cat_min_true)
+                    # print("pos_nat", pos_nat.shape, pos_nat, h[query_dst[0]].shape)
                     y_pred =link_pred(h[query_src], h[query_dst], pos_nat) 
 
 
                     # cat_fake = torch.cat([h[query_src[1:]], h[query_dst[1:]]], dim=0)
                     # cat_min_fake = cat_fake.min()
                     # cat_max_fake = cat_fake.max()
-                    # bad_nat = (bad_nat - cat_min_fake) / (cat_max_fake - cat_min_fake)
-                    # y_neg = link_pred(h[query_src[1:]], h[query_dst[1:]], bad_nat)
+                    # neg_nat = (neg_nat - cat_min_fake) / (cat_max_fake - cat_min_fake)
+                    # y_neg = link_pred(h[query_src[1:]], h[query_dst[1:]], neg_nat)
 
                     if k <2:
                         print("pos_nat.mean(dim=0, keepdim=True)", pos_nat.mean(dim=0, keepdim=True).mean(), pos_nat.mean(dim=0, keepdim=True).std())
-
+                        # print("neg_nat", neg_nat.mean(dim=0, keepdim=True).mean(), neg_nat.mean(dim=0, keepdim=True).std())
+              
                     
-                elif getattr(args, "with_hop", 0) == 1:
-                    # print("query_src.shape[0]", query_src.shape[0])
-                    # if query_src.shape[0] != prev_size:
-                    #     prev_size = query_src.shape[0]
-                    #     # print("making 999", query_src.shape[0], "index", idx )
-                    #     size_query = query_src.shape[0]
-                    #     time_snap = torch.full((size_query,), pos_t[idx], dtype=torch.long)
-                    #     idx_snap = torch.full((size_query,), pos_index[idx], dtype=torch.long)
-                    #     pos_nat, _ = NAT_module.contrast_nat(query_src, query_dst, query_dst, time_snap, idx_snap)
-                        # print("pos_nat", pos_nat.shape)
-                        # print("h[query_src]", h[query_src].shape, h[query_dst].shape)
-                    # y_pos = link_pred(h[query_src[0]], h[query_dst[0]], pos_nat)
-                    # y_neg = link_pred(h[query_src[1:]], h[query_dst[1:]], bad_nat)
-                    y_pred =link_pred(h[query_src], h[query_dst], pos_nat) 
-
+                # elif getattr(args, "with_hop", 0) == 1:
+                #     # print("query_src.shape[0]", query_src.shape[0])
+                #     # if query_src.shape[0] != prev_size:
+                #     #     prev_size = query_src.shape[0]
+                #     #     # print("making 999", query_src.shape[0], "index", idx )
+                #     #     size_query = query_src.shape[0]
+                #     #     time_snap = torch.full((size_query,), pos_t[idx], dtype=torch.long)
+                #     #     idx_snap = torch.full((size_query,), pos_index[idx], dtype=torch.long)
+                #     #     pos_nat, _ = NAT_module.contrast_nat(query_src, query_dst, query_dst, time_snap, idx_snap)
+                #         # print("pos_nat", pos_nat.shape)
+                #         # print("h[query_src]", h[query_src].shape, h[query_dst].shape)
+                #     y_pos = link_pred(h[query_src[0]], h[query_dst[0]], pos_nat)
+                #     y_neg = link_pred(h[query_src[1:]], h[query_dst[1:]], bad_nat)
+                    # y_pred =link_pred(h[query_src], h[query_dst], pos_nat) 
+                    
                 else:
                     # y_pos = link_pred(h[query_src[0]], h[query_dst[0]])
                     # y_neg = link_pred(h[query_src[1:]], h[query_dst[1:]])
@@ -274,15 +273,13 @@ def test_tgb(val_edges,interval, random_sampler, NAT_module, h,
             # y_neg = y_neg.squeeze(dim=-1).detach()
             y_pred = y_pred.squeeze(dim=-1).detach()
 
-
             if k < 2:
                 print("y_pred", y_pred[0].mean(dim=0),idx)
                 print("y_neg", y_pred[1:].mean(dim=0))
 
-
             input_dict = {
-            "y_pred_pos": np.array(y_pred[0].cpu()),
-            "y_pred_neg": np.array(y_pred[1:].cpu()),
+            "y_pred_pos": np.array( y_pred[0].cpu()),
+            "y_pred_neg": np.array( y_pred[1:].cpu()),
             "eval_metric": [metric],
             }
             perf_list.append(evaluator.eval(input_dict)[metric])
@@ -525,14 +522,20 @@ if __name__ == '__main__':
     # print("val_edges", val_edges.t)
     e_feat = full_data.msg
     edge_feat_dim = e_feat.shape[1]
-    
-    NAT_module = init_nat_module(full_data, e_feat, node_feat, train_edges,val_edges, test_edges, args, argsv)
+    if args.pre_training:
+        NAT_module = init_nat_module(full_data, e_feat, node_feat, train_edges,val_edges, test_edges, args, argsv)
+        NAT_module.logger.info(f"learning_rate {args.lr} \n, architecture gclstm \n dataset {args.dataset} \n time granularity  {args.time_scale}\n")
+        modelN = NAT_module.nat
+        modelN.load_state_dict(torch.load("./nat_models/model_state_dict.pth"))
+        modelN.eval()
+    else:     
+        NAT_module = init_nat_module(full_data, e_feat, node_feat, train_edges,val_edges, test_edges, args, argsv)
+        NAT_module.logger.info(f"learning_rate {args.lr} \n, architecture gclstm \n dataset {args.dataset} \n time granularity  {args.time_scale}\n")
+
+
     random_sampler_train = RandEdgeSampler((train_edges.src.cpu().numpy(), ), (train_edges.dst.cpu().numpy(), ))
     random_sampler_test = RandEdgeSampler((test_edges.src.cpu().numpy(), ), (test_edges.dst.cpu().numpy(), ))
     random_sampler_val = RandEdgeSampler((val_edges.src.cpu().numpy(), ), (val_edges.dst.cpu().numpy(), ))
-    print(NAT_module.logger)
-    NAT_module.logger.info(f"learning_rate {args.lr} \n, architecture gclstm \n dataset {args.dataset} \n time granularity  {args.time_scale}\n")
-
     num_epochs = args.max_epoch
     lr = args.lr
 
@@ -554,7 +557,7 @@ if __name__ == '__main__':
             link_pred = LinkPredictor(hidden_dim, hidden_dim, 1,
                                 2, 0.2).to(args.device)
         if args.with_hop == 1:
-            link_pred = LinkPredictorWithHop(in_channels=2*(node_feat_dim+2*args.self_dim), 
+            link_pred = LinkPredictorWithHop(in_channels=node_feat_dim+2*args.self_dim, 
                                  hop_dim=7, 
                                  hidden_channels=hidden_dim, 
                                  out_channels=1, 
@@ -578,11 +581,11 @@ if __name__ == '__main__':
 
         for epoch in range(num_epochs):
             print ("------------------------------------------")
-            NAT_module.nat.set_seed(seed)
+            # NAT_module.nat.set_seed(seed)
 
-            NAT_module.nat.reset_store()
-            NAT_module.nat.reset_self_rep()
-            NAT_module.nat.train()
+            # NAT_module.nat.reset_store()
+            # NAT_module.nat.reset_self_rep()
+            # NAT_module.nat.train()
             train_start_time = timeit.default_timer()
             optimizer.zero_grad()
             total_loss = 0
@@ -714,11 +717,10 @@ if __name__ == '__main__':
                     # else:
                     #     neg_dst = torch.randint( 0, num_nodes, (size_snap,), dtype=torch.long, device=args.device)
                     #     bad_l_cut = neg_dst[:size_cut]
-
                     time_snap = torch.full((size_snap,), timestep_list[snapshot_idx], dtype=torch.long)
-
+                    
                     edge_snap = torch.arange(snapshot_idx, snapshot_idx + size_snap, dtype=torch.long)
-                    pos_hop , neg_hop = NAT_module.contrast_nat(pos_index[0], pos_index[1], neg_dst, time_snap, edge_snap)
+                    pos_hop , neg_hop = NAT_module.nat.contrast_nat(pos_index[0], pos_index[1], neg_dst, time_snap, edge_snap, test =True)
                     # print("H", h.shape)
                     # print("neg_dst", neg_dst.shape, edge_snap.shape, time_snap.shape)
                     # print("pos_hop", pos_hop.shape)
@@ -739,11 +741,9 @@ if __name__ == '__main__':
                     pos_out = link_pred(h[pos_index[0]], h[pos_index[1]],pos_hop)
                     neg_out = link_pred(h[pos_index[0]], h[neg_dst], neg_hop)
 
-
-                # if k <10:
-
-                #     print("pos_hop", pos_hop.mean(dim=0, keepdim=True).mean(), pos_hop.mean(dim=0, keepdim=True).std())
-                #     print("neg_hop", neg_hop.mean(dim=0, keepdim=True).mean(), neg_hop.mean(dim=0, keepdim=True).std())
+                    if k <2:
+                        print("pos_hop", pos_hop.mean(dim=0, keepdim=True).mean(), pos_hop.mean(dim=0, keepdim=True).std())
+                        print("neg_hop", neg_hop.mean(dim=0, keepdim=True).mean(), neg_hop.mean(dim=0, keepdim=True).std())
                 # print("h[pos_index[0]]", h[pos_index[0]])
                 # print(" h[pos_index[1]]", h[pos_index[1]])
 
@@ -781,16 +781,12 @@ if __name__ == '__main__':
     #         val_time = timeit.default_timer() - start_epoch_val
     #         print(f"Val {metric}: {val_metrics}")
     #         print ("Val time: ", val_time)
-
     #         NAT_module.logger.info(f"train_loss: {total_loss} \n, metric: {val_metrics}\n  train time: {train_time} \n val time: {val_time} \n ")
-
     #         if (args.wandb):
     #             wandb.log({"train_loss":(total_loss),
     #                     "val_" + metric: val_metrics,
     #                     "train time": train_time,
-
-    #                     # "val time": val_time,
-
+    #                      "val time": val_time,
     #                     })
     #         writer.add_scalar("Loss/train", total_loss, epoch)
     #         writer.add_scalar("MRR/val", val_metrics, epoch)
@@ -819,14 +815,12 @@ if __name__ == '__main__':
     #                 best_epoch = epoch
     #                 break
     #             best_epoch = epoch
-
     #             NAT_module.logger.info(f"best epoch {best_epoch} \n, test_metrics {test_metrics} \n, test_time {test_time}\n")
     #             if (args.wandb):
     #                 wandb.log({"best epoch":(best_epoch),
     #                         "test_metrics": test_metrics,
     #                          "test_time": test_time,
     #                         })
-
     #     print ("run finishes")
     #     print ("best epoch is, ", best_epoch)
     #     print ("best val performance is, ", best_val)
@@ -871,7 +865,6 @@ if __name__ == '__main__':
                         # "val time": val_time,
                         })
             writer.add_scalar("Loss/train", total_loss, epoch)
-
             # writer.addReport_scalar("MRR/val", val_metrics, epoch)
             #! report test results when validation improves
             # if (val_metrics > best_val):
@@ -884,7 +877,7 @@ if __name__ == '__main__':
                 dataset.load_test_ns()
 
                 test_start_time = timeit.default_timer()
-                test_metrics, h, h_0, c_0 = test_tgb(full_data, interval,random_sampler_test, NAT_module,h, h_0, c_0, test_loader, test_snapshots, ts_list,
+                test_metrics, h, h_0, c_0 = test_tgb(full_data, interval,random_sampler_test, modelN,h, h_0, c_0, test_loader, test_snapshots, ts_list,
                 node_feat,model, link_pred,neg_sampler,evaluator,metric, split_mode='test')
                 test_time = timeit.default_timer() - test_start_time
                 # best_val = val_metrics

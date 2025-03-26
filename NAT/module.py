@@ -232,8 +232,11 @@ class NAT(torch.nn.Module):
     
     # print("ngh_and_batch_id_p", ngh_and_batch_id_p)
     # print("joint_p", joint_p.shape, joint_p)
+
     joint_p = self.get_position_encoding(joint_p)
     joint_n = self.get_position_encoding(joint_n)
+    # print("joint_p", joint_p.shape)
+
  
 
     features = torch.cat((joint_p, joint_n), 0)
@@ -242,9 +245,9 @@ class NAT(torch.nn.Module):
     tgt_self_rep = self.updated_self_rep(tgt_th)
     bad_self_rep = self.updated_self_rep(bad_th)
 
-    if k < 2:
-        print("features", features, features.shape)
-        print("ngh_and_batch_id_p", ngh_and_batch_id_p, ngh_and_batch_id_p.shape)
+    # if k < 2:
+    #     print("features", features, features.shape)
+    #     print("ngh_and_batch_id_p", ngh_and_batch_id_p, ngh_and_batch_id_p.shape)
         
     p_score, n_score, attn_score = self.forward(ngh_and_batch_id_p, ngh_and_batch_id_n, features, batch_size, src_self_rep, tgt_self_rep, bad_self_rep)
 
@@ -253,16 +256,21 @@ class NAT(torch.nn.Module):
     # print("n_score", n_score.shape, n_score.sigmoid())
     end = time.time()
     self.log_time('attention', start, end)
+
+    if not test:
+        self.self_rep[src_th] = src_self_rep.detach()
+        self.self_rep[tgt_th] = tgt_self_rep.detach()
     
-    self.self_rep[src_th] = src_self_rep.detach()
-    self.self_rep[tgt_th] = tgt_self_rep.detach()
+        self.self_rep[src_th] = src_self_rep.detach()
+        self.self_rep[tgt_th] = tgt_self_rep.detach()
+    
+        self.prev_raw[src_th] = torch.stack([tgt_th, e_idx_th, cut_time_th], dim = 1)
+        self.prev_raw[tgt_th] = torch.stack([src_th, e_idx_th, cut_time_th], dim = 1)
+    
+    
+        # N-cache update
+        self.update_memory(src_th, tgt_th, e_idx_th, cut_time_th, updated_mem_h0, updated_mem_h1, batch_size)
 
-    self.prev_raw[src_th] = torch.stack([tgt_th, e_idx_th, cut_time_th], dim = 1)
-    self.prev_raw[tgt_th] = torch.stack([src_th, e_idx_th, cut_time_th], dim = 1)
-
-
-    # N-cache update
-    self.update_memory(src_th, tgt_th, e_idx_th, cut_time_th, updated_mem_h0, updated_mem_h1, batch_size)
     # return p_score.sigmoid(), n_score.sigmoid()
     return p_score, n_score
   
@@ -397,6 +405,7 @@ class NAT(torch.nn.Module):
       n_embed = torch.cat((n_embed, src_self_rep, bad_self_rep), -1)
     # p_score = self.out_layer(p_embed).squeeze_(dim=-1)
     # n_score = self.out_layer(n_embed).squeeze_(dim=-1)
+
 
     return p_embed, n_embed, attn_score
 

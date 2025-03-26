@@ -87,11 +87,13 @@ class init_nat_module():
                   n_hops=self.NUM_HOP, replace_prob=self.REPLACE_PROB, self_dim=self.SELF_DIM, ngh_dim=self.NGH_DIM, device=self.device)
         nat.to(self.device)
         nat.reset_store()
+        self.logger = logger
         return nat
 
-    def contrast_nat(self, src_l_cut, tgt_l_cut, bad_l_cut, ts_l_cut, e_l_cut):
 
-        pos_prob, neg_prob = self.nat.contrast(src_l_cut, tgt_l_cut, bad_l_cut, ts_l_cut, e_l_cut)
+    def contrast_nat(self, src_l_cut, tgt_l_cut, bad_l_cut, ts_l_cut, e_l_cut, test = False):
+
+        pos_prob, neg_prob = self.nat.contrast(src_l_cut, tgt_l_cut, bad_l_cut, ts_l_cut, e_l_cut, test)
         return pos_prob, neg_prob 
 
         

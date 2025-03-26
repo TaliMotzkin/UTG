@@ -126,7 +126,7 @@ for run in range(args.run):
   nat.to(device)
   nat.reset_store()
 
-  print("NAT tali", len(nat.get_neighborhood_store()), nat.get_neighborhood_store()[0][0], nat.get_neighborhood_store()[1][0:32], nat.get_neighborhood_store()[2][3]) 
+  # print("NAT tali", len(nat.get_neighborhood_store()), nat.get_neighborhood_store()[0][0], nat.get_neighborhood_store()[1][0:32], nat.get_neighborhood_store()[2][3]) 
   optimizer = torch.optim.Adam(nat.parameters(), lr=LEARNING_RATE)
   criterion = torch.nn.BCELoss()
   early_stopper = EarlyStopMonitor(tolerance=TOLERANCE)
@@ -134,7 +134,7 @@ for run in range(args.run):
   # start train and val phases
   train_val(train_val_data, nat, args.mode, BATCH_SIZE, NUM_EPOCH, criterion, optimizer, early_stopper, rand_samplers, logger, model_dim, n_hop=NUM_HOP)
 
-  print("NAT tali after train", len(nat.get_neighborhood_store()), nat.get_neighborhood_store()[0][0], nat.get_neighborhood_store()[1][0:32], nat.get_neighborhood_store()[2][3]) 
+  # print("NAT tali after train", len(nat.get_neighborhood_store()), nat.get_neighborhood_store()[0][0], nat.get_neighborhood_store()[1][0:32], nat.get_neighborhood_store()[2][3]) 
   # final testing
   print("_*"*50)
   if args.mode == 'i':
