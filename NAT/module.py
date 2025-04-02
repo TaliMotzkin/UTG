@@ -111,24 +111,29 @@ class NAT(torch.nn.Module):
     # return torch.zeros(bs * self.num_neighbors[hop], device=self.device) << hop
     return torch.ones(bs * self.num_neighbors[hop], device=self.device, dtype=torch.int) << hop
 
-  def contrast(self, src_l_cut, tgt_l_cut, bad_l_cut, cut_time_l, e_idx_l=None, test=False, k=3):
+  def contrast(self,exp, pre_training, src_l_cut, tgt_l_cut, bad_l_cut, cut_time_l, e_idx_l=None, test=False, k=3):
     start = time.time()
     start_t = time.time()
     batch_size = len(src_l_cut)
     
     # Move data to the GPU
-    # src_th = torch.from_numpy(src_l_cut).to(dtype=torch.long, device=self.device)
-    # tgt_th = torch.from_numpy(tgt_l_cut).to(dtype=torch.long, device=self.device)
-    # bad_th = torch.from_numpy(bad_l_cut).to(dtype=torch.long, device=self.device)
-    src_th = src_l_cut.to(dtype=torch.long, device=self.device)
-    tgt_th = tgt_l_cut.to(dtype=torch.long, device=self.device)
-    bad_th = bad_l_cut.to(dtype=torch.long, device=self.device)
-      
+    if pre_training =="train":
+        src_th = torch.from_numpy(src_l_cut).to(dtype=torch.long, device=self.device)
+        tgt_th = torch.from_numpy(tgt_l_cut).to(dtype=torch.long, device=self.device)
+        bad_th = torch.from_numpy(bad_l_cut).to(dtype=torch.long, device=self.device)
+        cut_time_th = torch.from_numpy(cut_time_l).to(dtype=torch.float, device=self.device)
+        e_idx_th = torch.from_numpy(e_idx_l).to(dtype=torch.long, device=self.device)
+
+    else:
+        src_th = src_l_cut.to(dtype=torch.long, device=self.device)
+        tgt_th = tgt_l_cut.to(dtype=torch.long, device=self.device)
+        bad_th = bad_l_cut.to(dtype=torch.long, device=self.device)
+        cut_time_th = cut_time_l.to(dtype=torch.float, device=self.device)
+        e_idx_th = e_idx_l.to(dtype=torch.long, device=self.device)
+    
+    
     idx_th = torch.cat((src_th, tgt_th, bad_th), 0)
-    # cut_time_th = torch.from_numpy(cut_time_l).to(dtype=torch.float, device=self.device)
-    # e_idx_th = torch.from_numpy(e_idx_l).to(dtype=torch.long, device=self.device)
-    cut_time_th = cut_time_l.to(dtype=torch.float, device=self.device)
-    e_idx_th = e_idx_l.to(dtype=torch.long, device=self.device)
+    
     
     end = time.time()
     batch_idx = torch.arange(batch_size * 3, device=self.device)
@@ -237,7 +242,8 @@ class NAT(torch.nn.Module):
     joint_n = self.get_position_encoding(joint_n)
     # print("joint_p", joint_p.shape)
 
- 
+    if exp == "exp_2":
+        return joint_n, ngh_and_batch_id_n, joint_p, ngh_and_batch_id_p
 
     features = torch.cat((joint_p, joint_n), 0)
 
@@ -249,7 +255,7 @@ class NAT(torch.nn.Module):
     #     print("features", features, features.shape)
     #     print("ngh_and_batch_id_p", ngh_and_batch_id_p, ngh_and_batch_id_p.shape)
         
-    p_score, n_score, attn_score = self.forward(ngh_and_batch_id_p, ngh_and_batch_id_n, features, batch_size, src_self_rep, tgt_self_rep, bad_self_rep)
+    p_score, n_score, attn_score = self.forward(pre_training, ngh_and_batch_id_p, ngh_and_batch_id_n, features, batch_size, src_self_rep, tgt_self_rep, bad_self_rep)
 
     # if k < 2:
     # print("P score", p_score.shape, p_score.sigmoid())
@@ -271,8 +277,10 @@ class NAT(torch.nn.Module):
         # N-cache update
         self.update_memory(src_th, tgt_th, e_idx_th, cut_time_th, updated_mem_h0, updated_mem_h1, batch_size)
 
-    # return p_score.sigmoid(), n_score.sigmoid()
-    return p_score, n_score
+    if pre_training == 'train':
+        return p_score.sigmoid(), n_score.sigmoid()
+    else:    
+        return p_score, n_score
   
   def get_position_encoding(self, joint):
     if self.pos_dim == 0:
@@ -393,7 +401,7 @@ class NAT(torch.nn.Module):
     return updated_mem
 
 
-  def forward(self, ngh_and_batch_id_p, ngh_and_batch_id_n, feat, bs, src_self_rep=None, tgt_self_rep=None, bad_self_rep=None):
+  def forward(self,pre_training, ngh_and_batch_id_p, ngh_and_batch_id_n, feat, bs, src_self_rep=None, tgt_self_rep=None, bad_self_rep=None):
     edge_idx = torch.cat((ngh_and_batch_id_p, ngh_and_batch_id_n), dim=0).T
     embed, _, attn_score = self.gat((feat, edge_idx.long(), 2*bs))
     p_embed = embed[:bs]
@@ -403,11 +411,13 @@ class NAT(torch.nn.Module):
       assert(bad_self_rep is not None)
       p_embed = torch.cat((p_embed, src_self_rep, tgt_self_rep), -1)
       n_embed = torch.cat((n_embed, src_self_rep, bad_self_rep), -1)
-    # p_score = self.out_layer(p_embed).squeeze_(dim=-1)
-    # n_score = self.out_layer(n_embed).squeeze_(dim=-1)
-
-
-    return p_embed, n_embed, attn_score
+    
+    if pre_training == 'train':
+        p_score = self.out_layer(p_embed).squeeze_(dim=-1)
+        n_score = self.out_layer(n_embed).squeeze_(dim=-1)
+        return p_score, n_score, attn_score
+    else:
+        return p_embed, n_embed, attn_score
 
   def init_time_encoder(self):
     return TimeEncode(expand_dim=self.time_dim)

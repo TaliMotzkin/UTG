@@ -3,7 +3,7 @@ import time
 import sys
 import os
 from NAT.utils import *
-
+import datetime
 
 
 
@@ -11,15 +11,18 @@ def set_up_logger(args, sys_argv):
     # Create a unique runtime ID for log naming
     n_degree, n_hop = process_sampling_numbers(args.n_degree, args.n_hop)
     n_degree = [str(n) for n in n_degree]
-    runtime_id = '{}-{}-{}-{}-{}'.format(str(time.time()), args.dataset, n_hop, 'k'.join(n_degree), args.pos_dim)
+    runtime_id = '{}'.format(datetime.datetime.now().strftime('%m%d-%H%M'))
 
     # Initialize the root logger
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)  # Set the lowest level to capture all logs
     logger.handlers = []  # Clear existing handlers
 
+    n_str = ""
+    for degree in args.n_degree:
+        n_str += (str(degree) + "k")
     # File Handler for logging to a file
-    file_path = 'log/{}.log'.format(runtime_id)
+    file_path = f'log/{runtime_id}-{args.with_hop}-{n_str}-{args.lr}-{args.exp_name}-{args.dataset}-{args.time_scale}.log'
     fh = logging.FileHandler(file_path)
     fh.setLevel(logging.DEBUG)  # Logs everything to the file
 

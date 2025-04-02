@@ -1,4 +1,4 @@
-
+    
 import argparse
 import sys
 import torch
@@ -74,7 +74,11 @@ def get_args():
     parser.add_argument('--ngh_dim', type=int, default=4, help='dimension of the neighborhood representation')
     parser.add_argument('-m', '--mode', type=str, default='t', choices=['t', 'i'], help='transductive (t) or inductive (i)')
     parser.add_argument('--with_hop', type=int, default=0, help='what kind of model should we use')
-    parser.add_argument("--pre_training", action="store_true", default=False)
+    parser.add_argument("--pre_training", type=str, default="use_pretrain")
+    parser.add_argument('--exp_name', type=str, default="exp1")
+    parser.add_argument('--only_nat', action='store_true', default=False)
+    parser.add_argument('--pos', type=str, default="not_pos")
+
 
 
     

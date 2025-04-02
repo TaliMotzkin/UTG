@@ -91,56 +91,9 @@ class init_nat_module():
         return nat
 
 
-    def contrast_nat(self, src_l_cut, tgt_l_cut, bad_l_cut, ts_l_cut, e_l_cut, test = False):
+    def contrast_nat(self, pre_training, src_l_cut, tgt_l_cut, bad_l_cut, ts_l_cut, e_l_cut, test = False):
 
-        pos_prob, neg_prob = self.nat.contrast(src_l_cut, tgt_l_cut, bad_l_cut, ts_l_cut, e_l_cut, test)
+        pos_prob, neg_prob = self.nat.contrast(pre_training, src_l_cut, tgt_l_cut, bad_l_cut, ts_l_cut, e_l_cut, test)
         return pos_prob, neg_prob 
 
-        
-        # print("NAT tali", len(nat.get_neighborhood_store()), nat.get_neighborhood_store()[0][0], nat.get_neighborhood_store()[1][0:32], nat.get_neighborhood_store()[2][3]) 
-##################maybe dont need the rest - check! ######################
 
-  # start train and val phases
-  # train_val(train_val_data, nat, args.mode, BATCH_SIZE, NUM_EPOCH, criterion, optimizer, early_stopper, rand_samplers, logger, model_dim, n_hop=NUM_HOP)
-
-  # # print("NAT tali after train", len(nat.get_neighborhood_store()), nat.get_neighborhood_store()[0][0], nat.get_neighborhood_store()[1][0:32], nat.get_neighborhood_store()[2][3]) 
-  # # final testing
-  # print("_*"*50)
-  # if args.mode == 'i':
-  #   nat.reset_store()
-  #   nat.reset_self_rep()
-  #   train_acc, train_ap, train_f1, train_auc = eval_one_epoch('test for {} nodes'.format(args.mode), nat, all_train_val_rand_sampler, all_train_val_src_l, all_train_val_tgt_l, all_train_val_ts_l, all_train_val_label_l, all_train_val_e_idx_l, bs=32)
-  # test_start = time.time()
-  # test_acc, test_ap, test_f1, test_auc = eval_one_epoch('test for {} nodes'.format(args.mode), nat, test_rand_sampler, test_src_l, test_tgt_l, test_ts_l, test_label_l, test_e_idx_l)
-  # test_end = time.time()
-  # logger.info('Test statistics: {} all nodes -- acc: {}, auc: {}, ap: {}, time: {}'.format(args.mode, test_acc, test_auc, test_ap, test_end - test_start))
-  # test_new_new_acc, test_new_new_ap, test_new_new_auc, test_new_old_acc, test_new_old_ap, test_new_old_auc = [-1]*6
-  # if args.mode == 'i':
-  #   inductive_auc.append(test_auc)
-  #   inductive_ap.append(test_ap)
-  # else:
-  #   transductive_auc.append(test_auc)
-  #   transductive_ap.append(test_ap)
-  # test_times.append(test_end - test_start)
-  # early_stoppers.append(early_stopper.best_epoch + 1)
-  # # save model
-  # logger.info('Saving NAT model ...')
-  # torch.save(nat.state_dict(), best_model_path)
-  # logger.info('NAT model saved')
-
-  # # save one line result
-  # save_oneline_result('log/', args, [test_acc, test_auc, test_ap, test_new_new_acc, test_new_new_ap, test_new_new_auc, test_new_old_acc, test_new_old_ap, test_new_old_auc])
-  # # save walk_encodings_scores
-  # total_end = time.time()
-  # print("NAT experiment statistics:")
-  # if args.mode == "t":
-  #   nat_results(logger, transductive_auc, "transductive_auc")
-  #   nat_results(logger, transductive_ap, "transductive_ap")
-  # else:
-  #   nat_results(logger, inductive_auc, "inductive_auc")
-  #   nat_results(logger, inductive_ap, "inductive_ap")
-  
-  # nat_results(logger, test_times, "test_times")
-  # nat_results(logger, early_stoppers, "early_stoppers")
-  # total_time.append(total_end - total_start)
-  # nat_results(logger, total_time, "total_time")

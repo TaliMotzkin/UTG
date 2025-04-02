@@ -13,7 +13,7 @@ from utils import *
 logging.getLogger('matplotlib.font_manager').disabled = True
 logging.getLogger('matplotlib.ticker').disabled = True
 
-def train_val(train_val_data, model, mode, bs, epochs, criterion, optimizer, early_stopper, rand_samplers, logger, model_dim, n_hop=2):
+def train_val(exp_name, pre_training, train_val_data, model, mode, bs, epochs, criterion, optimizer, early_stopper, rand_samplers, logger, model_dim, n_hop=2):
   # unpack the data, prepare for the training
   train_data, val_data = train_val_data
   train_src_l, train_tgt_l, train_ts_l, train_e_idx_l, train_label_l = train_data
@@ -66,7 +66,7 @@ def train_val(train_val_data, model, mode, bs, epochs, criterion, optimizer, ear
       # feed in the data and learn from error
       optimizer.zero_grad()
       model.train()
-      pos_prob, neg_prob = model.contrast(src_l_cut, tgt_l_cut, bad_l_cut, ts_l_cut, e_l_cut)   # the core training code
+      pos_prob, neg_prob = model.contrast(exp_name, pre_training, src_l_cut, tgt_l_cut, bad_l_cut, ts_l_cut, e_l_cut)   # the core training code
       pos_label = torch.ones(size, dtype=torch.float, device=device, requires_grad=False)
       neg_label = torch.zeros(size, dtype=torch.float, device=device, requires_grad=False)
       loss = criterion(pos_prob, pos_label) + criterion(neg_prob, neg_label)
@@ -88,7 +88,7 @@ def train_val(train_val_data, model, mode, bs, epochs, criterion, optimizer, ear
     nat_results(logger, train_time, "train_time")
     # validation phase use all information
     val_start = time.time()
-    val_acc, val_ap, val_f1, val_auc = eval_one_epoch('val for {} nodes'.format(mode), model, val_rand_sampler, val_src_l,
+    val_acc, val_ap, val_f1, val_auc = eval_one_epoch(exp_name, pre_training, 'val for {} nodes'.format(mode), model, val_rand_sampler, val_src_l,
                               val_tgt_l, val_ts_l, val_label_l, val_e_idx_l)
     val_end = time.time()
     logger.info('epoch: {}:'.format(epoch))

@@ -132,7 +132,7 @@ for run in range(args.run):
   early_stopper = EarlyStopMonitor(tolerance=TOLERANCE)
 
   # start train and val phases
-  train_val(train_val_data, nat, args.mode, BATCH_SIZE, NUM_EPOCH, criterion, optimizer, early_stopper, rand_samplers, logger, model_dim, n_hop=NUM_HOP)
+  train_val(args.exp_name, args.pre_training, train_val_data, nat, args.mode, BATCH_SIZE, NUM_EPOCH, criterion, optimizer, early_stopper, rand_samplers, logger, model_dim, n_hop=NUM_HOP)
 
   # print("NAT tali after train", len(nat.get_neighborhood_store()), nat.get_neighborhood_store()[0][0], nat.get_neighborhood_store()[1][0:32], nat.get_neighborhood_store()[2][3]) 
   # final testing
@@ -140,11 +140,12 @@ for run in range(args.run):
   if args.mode == 'i':
     nat.reset_store()
     nat.reset_self_rep()
-    train_acc, train_ap, train_f1, train_auc = eval_one_epoch('test for {} nodes'.format(args.mode), nat, all_train_val_rand_sampler, all_train_val_src_l, all_train_val_tgt_l, all_train_val_ts_l, all_train_val_label_l, all_train_val_e_idx_l, bs=32)
+    train_acc, train_ap, train_f1, train_auc = eval_one_epoch(args.exp_name, args.pre_training, 'test for {} nodes'.format(args.mode), nat, all_train_val_rand_sampler, all_train_val_src_l, all_train_val_tgt_l, all_train_val_ts_l, all_train_val_label_l, all_train_val_e_idx_l, bs=32)
   test_start = time.time()
-  test_acc, test_ap, test_f1, test_auc = eval_one_epoch('test for {} nodes'.format(args.mode), nat, test_rand_sampler, test_src_l, test_tgt_l, test_ts_l, test_label_l, test_e_idx_l)
+  test_acc, test_ap, test_f1, test_auc = eval_one_epoch(args.exp_name,args.pre_training, 'test for {} nodes'.format(args.mode), nat, test_rand_sampler, test_src_l, test_tgt_l, test_ts_l, test_label_l, test_e_idx_l)
   test_end = time.time()
   logger.info('Test statistics: {} all nodes -- acc: {}, auc: {}, ap: {}, time: {}'.format(args.mode, test_acc, test_auc, test_ap, test_end - test_start))
+  print("test_end - test_start", test_end - test_start)
   test_new_new_acc, test_new_new_ap, test_new_new_auc, test_new_old_acc, test_new_old_ap, test_new_old_auc = [-1]*6
   if args.mode == 'i':
     inductive_auc.append(test_auc)

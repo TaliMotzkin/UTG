@@ -188,9 +188,9 @@ if __name__ == '__main__':
     evaluator = Evaluator(name=args.dataset) #evaluation class
     min_dst_idx, max_dst_idx = int(full_data.dst.min()), int(full_data.dst.max()) #dst - A list of destination nodes for the events with shape [num_events]
 
-    print("print data properties in the 0 link", full_data.src [0],full_data.dst[0],full_data.t[0],
-                full_data.msg[0],
-                full_data.y[0])
+    # print("print data properties in the 0 link", full_data.src [0],full_data.dst[0],full_data.t[0],
+    #             full_data.msg[0],
+    #             full_data.y[0])
     
     
 #     min_dst_idx 0
@@ -211,11 +211,11 @@ if __name__ == '__main__':
     #! set up node features
     node_feat = dataset.node_feat #NONE ---> node features of the dataset with dim [N, feat_dim] , uniq_nodes!!
     if (node_feat is not None):
-        print("Node not none")
+        # print("Node not none")
         node_feat = node_feat.to(args.device)
         node_feat_dim = node_feat.size(1)
     else:
-        print("Node is none")
+        # print("Node is none")
         node_feat_dim = 256
         node_feat = torch.randn((full_data.num_nodes,node_feat_dim)).to(args.device)
 
@@ -270,8 +270,8 @@ if __name__ == '__main__':
             model.train()
             link_pred.train()
             snapshot_list = train_data['edge_index'] #0: snap, 1: snap.....207:snap
-            print("snapshot_list length", len(snapshot_list))
-            print("time", train_data['ts_map'])
+            # print("snapshot_list length", len(snapshot_list))
+            # print("time", train_data['ts_map'])
             
             h_0, c_0, h = None, None, None
             total_loss = 0
@@ -281,16 +281,16 @@ if __name__ == '__main__':
                 if (snapshot_idx == 0): #first snapshot, feed the current snapshot
                     cur_index = snapshot_list[snapshot_idx] #edge indexes
                     cur_index = cur_index.long().to(args.device)
-                    print("noeds indexes", cur_index)
+                    # print("noeds indexes", cur_index)
                     # TODO, also need to support edge attributes correctly in TGX
                     if ('edge_attr' not in train_data):
                         edge_attr = torch.ones(cur_index.size(1), edge_feat_dim).to(args.device)
                     else:
                         raise NotImplementedError("Edge attributes are not yet supported")
                     h, h_0, c_0 = model(node_feat, cur_index, edge_attr, h_0, c_0) #random node features and 1s for edge_sttr
-                    if snapshot_idx < 5:
-                        print("edge_attr", edge_attr, edge_attr.shape) # 1, 1..
-                        print("node_feat", node_feat, node_feat.shape ) #random
+                    # if snapshot_idx < 5:
+                        # print("edge_attr", edge_attr, edge_attr.shape) # 1, 1..
+                        # print("node_feat", node_feat, node_feat.shape ) #random
                 else: #subsequent snapshot, feed the previous snapshot
                     prev_index = snapshot_list[snapshot_idx-1]
                     prev_index = prev_index.long().to(args.device)
@@ -299,13 +299,13 @@ if __name__ == '__main__':
                     else:
                         raise NotImplementedError("Edge attributes are not yet supported")
                     h, h_0, c_0 = model(node_feat, prev_index, edge_attr, h_0, c_0)
-                    if snapshot_idx < 5:
-                        print("h", h, h.shape) #torch.Size([352638, 256]) - nodes and features
-                        print("h_0", h_0, h_0.shape )
-                        print("c_0", c_0, c_0.shape)
-                        print("prev_index", prev_index, prev_index.shape) #[][] - (2, edges)
-                    else:
-                        break
+                    # if snapshot_idx < 5:
+                        # print("h", h, h.shape) #torch.Size([352638, 256]) - nodes and features
+                        # print("h_0", h_0, h_0.shape )
+                        # print("c_0", c_0, c_0.shape)
+                        # print("prev_index", prev_index, prev_index.shape) #[][] - (2, edges)
+                    # else:
+                    #     break
 
 
                 pos_index = snapshot_list[snapshot_idx]

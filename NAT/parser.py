@@ -38,6 +38,7 @@ def get_args():
   # parser.add_argument('--cpu_cores', type=int, default=1, help='number of cpu_cores used for position encoding')
   parser.add_argument('--verbosity', type=int, default=1, help='verbosity of the program output')
   parser.add_argument('--run', type=int, default=2, help='number of model runs')
+  parser.add_argument('--pre_training', type=str, default='train')
 
 
   try:
